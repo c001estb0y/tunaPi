@@ -78,6 +78,7 @@ type _SendFn = Callable[[RenderedMessage], Awaitable[None]]
 
 _CONFIG_DIR = Path.home() / ".tunapi"
 _SHUTDOWN_STATE_FILE = _CONFIG_DIR / "last_shutdown.json"
+_USER_IS_BOT_CACHE: dict[str, bool] = {}
 
 
 def _resolve_upload_dir(cfg: MattermostBridgeConfig, channel_id: str) -> Path:
@@ -144,6 +145,32 @@ async def _send_to_channel(
     message: RenderedMessage,
 ) -> None:
     await cfg.exec_cfg.transport.send(channel_id=channel_id, message=message)
+
+
+async def _sender_is_bot(
+    msg: MattermostIncomingMessage,
+    cfg: MattermostBridgeConfig,
+) -> bool:
+    """Return whether the sender is a bot account, caching Mattermost lookups."""
+    if not msg.sender_id:
+        return False
+    if msg.sender_id == cfg.bot_user_id:
+        return True
+    cached = _USER_IS_BOT_CACHE.get(msg.sender_id)
+    if cached is not None:
+        return cached
+    try:
+        user = await cfg.bot.get_user(msg.sender_id)
+    except Exception as exc:  # noqa: BLE001
+        logger.warning(
+            "mattermost.sender_lookup_failed",
+            sender_id=msg.sender_id,
+            error=str(exc),
+        )
+        return False
+    is_bot = bool(getattr(user, "is_bot", False))
+    _USER_IS_BOT_CACHE[msg.sender_id] = is_bot
+    return is_bot
 
 
 async def _handle_cancel_reaction(
@@ -1080,6 +1107,7 @@ async def _resolve_prompt(
     trigger_mode = await resolve_trigger_mode(
         msg.channel_id,
         chat_prefs,
+        default=cfg.trigger_mode,
     )
     if not should_trigger(
         msg, bot_username=cfg.bot_username, trigger_mode=trigger_mode
@@ -1336,6 +1364,15 @@ async def _dispatch_message(
         chat_prefs,
         send,
     ):
+        return
+
+    if await _sender_is_bot(msg, cfg):
+        logger.info(
+            "mattermost.bot_message_ignored",
+            channel_id=msg.channel_id,
+            sender=msg.sender_username,
+            root_id=msg.root_id,
+        )
         return
 
     # 1. Command handling

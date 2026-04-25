@@ -12,6 +12,7 @@ from tunapi.core.roundtable import RoundtableSession, RoundtableStore
 from tunapi.mattermost.loop import (
     _ResolvedPrompt,
     _archive_roundtable,
+    _dispatch_message,
     _handle_cancel_reaction,
     _handle_file_command,
     _resolve_prompt,
@@ -81,6 +82,7 @@ def _make_cfg(
     cfg.runtime = MagicMock()
     cfg.runtime.projects_root = None
     cfg.runtime.default_engine = "claude"
+    cfg.trigger_mode = "all"
 
     cfg.exec_cfg = MagicMock()
     cfg.exec_cfg.transport = AsyncMock()
@@ -426,6 +428,18 @@ class TestResolvePrompt:
         assert result is None
 
     @pytest.mark.anyio()
+    async def test_uses_configured_trigger_mode_as_default(self):
+        """Transport config trigger_mode applies when no channel override exists."""
+        cfg = _make_cfg(bot_username="tunabot")
+        cfg.trigger_mode = "mentions"
+        msg = _make_msg(text="hello world", channel_type="O")
+        send = AsyncMock()
+
+        result = await _resolve_prompt(msg, cfg, None, send)
+
+        assert result is None
+
+    @pytest.mark.anyio()
     async def test_returns_resolved_on_dm(self):
         """DMs always trigger."""
         cfg = _make_cfg(bot_username="tunabot")
@@ -474,6 +488,36 @@ class TestResolvePrompt:
         result = await _resolve_prompt(msg, cfg, None, send)
 
         assert result is None
+
+    @pytest.mark.anyio()
+    async def test_main_channel_bot_message_is_not_dispatched_to_engine(self):
+        """Bot-authored main-channel posts must not trigger another bot."""
+        cfg = _make_cfg(bot_username="tunabot")
+        cfg.bot = MagicMock()
+        cfg.bot.get_user = AsyncMock(return_value=MagicMock(is_bot=True))
+        cfg.cross_roundtable_enabled = True
+        msg = _make_msg(
+            text="🎯 **圆桌会议已开启** @tunabot",
+            channel_type="O",
+            sender_id="other-bot",
+            sender_username="kaixing",
+        )
+
+        with patch("tunapi.mattermost.loop._run_engine", new_callable=AsyncMock) as run:
+            await _dispatch_message(
+                msg,
+                cfg,
+                {},
+                MagicMock(),
+                None,
+                None,
+                None,
+                None,
+                None,
+                None,
+            )
+
+        run.assert_not_awaited()
 
     @pytest.mark.anyio()
     async def test_voice_transcription_used_when_available(self):

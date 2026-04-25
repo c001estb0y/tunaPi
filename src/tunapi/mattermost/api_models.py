@@ -25,6 +25,7 @@ class User(msgspec.Struct, forbid_unknown_fields=False):
     last_name: str = ""
     nickname: str = ""
     roles: str = ""
+    is_bot: bool = False
 
 
 class Channel(msgspec.Struct, forbid_unknown_fields=False):

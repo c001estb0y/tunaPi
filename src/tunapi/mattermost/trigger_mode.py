@@ -12,9 +12,11 @@ from .types import MattermostIncomingMessage
 async def resolve_trigger_mode(
     channel_id: str,
     chat_prefs: ChatPrefsStore | None,
+    *,
+    default: str = "all",
 ) -> str:
     """Return 'all' or 'mentions' for a channel."""
-    return await _core_resolve(channel_id, chat_prefs, default="all")
+    return await _core_resolve(channel_id, chat_prefs, default=default)
 
 
 def should_trigger(
