@@ -7,13 +7,13 @@ from typing import Any
 import httpx
 import pytest
 
-pytestmark = pytest.mark.anyio
-
-from tunapi.mattermost.api_models import Channel, FileInfo, Post, User
+from tunapi.mattermost.api_models import Channel, FileInfo, Post, PostList, User
 from tunapi.mattermost.client_api import (
     HttpMattermostClient,
     MattermostRetryAfter,
 )
+
+pytestmark = pytest.mark.anyio
 
 
 # ---------------------------------------------------------------------------
@@ -95,7 +95,9 @@ class TestGetMe:
         self, client: HttpMattermostClient, transport: FakeTransport
     ):
         transport.enqueue(
-            _json_response({"id": "bot1", "username": "tunapi-bot", "roles": "system_user"})
+            _json_response(
+                {"id": "bot1", "username": "tunapi-bot", "roles": "system_user"}
+            )
         )
         user = await client.get_me()
         assert isinstance(user, User)
@@ -137,7 +139,9 @@ class TestCreatePost:
         self, client: HttpMattermostClient, transport: FakeTransport
     ):
         transport.enqueue(
-            _json_response({"id": "p2", "channel_id": "c1", "root_id": "p1", "message": "reply"})
+            _json_response(
+                {"id": "p2", "channel_id": "c1", "root_id": "p1", "message": "reply"}
+            )
         )
         post = await client.create_post("c1", "reply", root_id="p1")
         assert isinstance(post, Post)
@@ -147,7 +151,9 @@ class TestCreatePost:
         self, client: HttpMattermostClient, transport: FakeTransport
     ):
         transport.enqueue(
-            _json_response({"id": "p3", "channel_id": "c1", "message": "hi", "props": {"k": "v"}})
+            _json_response(
+                {"id": "p3", "channel_id": "c1", "message": "hi", "props": {"k": "v"}}
+            )
         )
         post = await client.create_post("c1", "hi", props={"k": "v"})
         assert isinstance(post, Post)
@@ -164,6 +170,35 @@ class TestUpdatePost:
         post = await client.update_post("p1", "edited")
         assert isinstance(post, Post)
         assert post.message == "edited"
+
+
+class TestGetThread:
+    async def test_success(
+        self, client: HttpMattermostClient, transport: FakeTransport
+    ):
+        transport.enqueue(
+            _json_response(
+                {
+                    "order": ["p1", "p2"],
+                    "posts": {
+                        "p1": {"id": "p1", "channel_id": "c1", "message": "root"},
+                        "p2": {
+                            "id": "p2",
+                            "channel_id": "c1",
+                            "root_id": "p1",
+                            "message": "reply",
+                        },
+                    },
+                }
+            )
+        )
+
+        thread = await client.get_thread("p1")
+
+        assert isinstance(thread, PostList)
+        assert thread.order == ["p1", "p2"]
+        assert thread.posts["p2"].root_id == "p1"
+        assert str(transport.requests[-1].url).endswith("/api/v4/posts/p1/thread")
 
 
 class TestDeletePost:
@@ -197,13 +232,15 @@ class TestGetChannel:
         self, client: HttpMattermostClient, transport: FakeTransport
     ):
         transport.enqueue(
-            _json_response({
-                "id": "ch1",
-                "type": "O",
-                "display_name": "General",
-                "name": "general",
-                "team_id": "t1",
-            })
+            _json_response(
+                {
+                    "id": "ch1",
+                    "type": "O",
+                    "display_name": "General",
+                    "name": "general",
+                    "team_id": "t1",
+                }
+            )
         )
         ch = await client.get_channel("ch1")
         assert isinstance(ch, Channel)
@@ -220,15 +257,19 @@ class TestUploadFile:
         self, client: HttpMattermostClient, transport: FakeTransport
     ):
         transport.enqueue(
-            _json_response({
-                "file_infos": [{
-                    "id": "f1",
-                    "name": "test.txt",
-                    "size": 100,
-                    "mime_type": "text/plain",
-                    "extension": "txt",
-                }]
-            })
+            _json_response(
+                {
+                    "file_infos": [
+                        {
+                            "id": "f1",
+                            "name": "test.txt",
+                            "size": 100,
+                            "mime_type": "text/plain",
+                            "extension": "txt",
+                        }
+                    ]
+                }
+            )
         )
         fi = await client.upload_file("c1", "test.txt", b"hello")
         assert isinstance(fi, FileInfo)

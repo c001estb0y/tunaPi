@@ -7,6 +7,7 @@ them before passing to the engine dispatcher.
 
 from __future__ import annotations
 
+import re
 import time
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
@@ -26,6 +27,32 @@ logger = get_logger(__name__)
 
 # Keep backward-compatible alias
 parse_slash_command = parse_command
+
+_MENTION_RE = re.compile(r"@([A-Za-z0-9_.-]+)")
+
+
+def parse_cross_rt_start(args: str) -> tuple[list[str], str, str | None]:
+    """Parse ``!rt start @bot1 @bot2 topic`` arguments."""
+    participants: list[str] = []
+    topic_parts: list[str] = []
+
+    for token in args.split():
+        match = _MENTION_RE.fullmatch(token)
+        if match and not topic_parts:
+            participants.append(match.group(1))
+            continue
+        topic_parts.append(token)
+
+    if len(participants) < 2:
+        return [], "", "Need at least 2 @bot participants."
+    if len(set(participants)) != len(participants):
+        return [], "", "Duplicate @bot participants are not allowed."
+
+    topic = " ".join(topic_parts).strip()
+    if not topic:
+        return participants, "", "Topic is required."
+
+    return participants, topic, None
 
 
 async def handle_help(
@@ -136,7 +163,9 @@ async def handle_model(
             if model:
                 model_display = f" (model: `{model}`)"
         await send(
-            RenderedMessage(text=f"Default engine set to `{canonical_engine}`{model_display}")
+            RenderedMessage(
+                text=f"Default engine set to `{canonical_engine}`{model_display}"
+            )
         )
         logger.info("command.model", channel_id=channel_id, engine=canonical_engine)
         return
@@ -379,7 +408,11 @@ async def handle_project(
         # Discovered 프로젝트는 toml에 자동 등록
         if discovered_path is not None:
             _register_project_in_config(
-                name, discovered_path, channel_id, runtime=runtime, config_path=config_path
+                name,
+                discovered_path,
+                channel_id,
+                runtime=runtime,
+                config_path=config_path,
             )
 
         if chat_prefs:
@@ -609,7 +642,9 @@ async def handle_memory(
 ) -> None:
     """Manage project memory entries."""
     if not project:
-        await send(RenderedMessage(text="프로젝트를 먼저 설정하세요. `!project set <name>`"))
+        await send(
+            RenderedMessage(text="프로젝트를 먼저 설정하세요. `!project set <name>`")
+        )
         return
     if not facade:
         await send(RenderedMessage(text="Memory storage unavailable."))
@@ -622,7 +657,11 @@ async def handle_memory(
     if not subcmd:
         summary = await facade.memory.get_context_summary(project, max_per_type=5)
         if not summary:
-            await send(RenderedMessage(text=f"프로젝트 `{project}`에 저장된 메모리가 없습니다."))
+            await send(
+                RenderedMessage(
+                    text=f"프로젝트 `{project}`에 저장된 메모리가 없습니다."
+                )
+            )
         else:
             await send(RenderedMessage(text=summary))
         return
@@ -654,7 +693,9 @@ async def handle_memory(
         add_parts = subargs.split(None, 2)
         if len(add_parts) < 3:
             await send(
-                RenderedMessage(text="Usage: `!memory add <type> <title> <content>`\nTypes: `decision`, `review`, `idea`, `context`")
+                RenderedMessage(
+                    text="Usage: `!memory add <type> <title> <content>`\nTypes: `decision`, `review`, `idea`, `context`"
+                )
             )
             return
         entry_type_raw, title, content = add_parts
@@ -675,7 +716,11 @@ async def handle_memory(
             content=content,
             source=source,
         )
-        await send(RenderedMessage(text=f"Entry added: `{entry.id[:16]}` [{entry.type}] **{entry.title}** (source: {source})"))
+        await send(
+            RenderedMessage(
+                text=f"Entry added: `{entry.id[:16]}` [{entry.type}] **{entry.title}** (source: {source})"
+            )
+        )
         return
 
     if subcmd == "search":
@@ -736,7 +781,9 @@ async def handle_branch(
 ) -> None:
     """Manage conversation branches."""
     if not project:
-        await send(RenderedMessage(text="프로젝트를 먼저 설정하세요. `!project set <name>`"))
+        await send(
+            RenderedMessage(text="프로젝트를 먼저 설정하세요. `!project set <name>`")
+        )
         return
     if not facade:
         await send(RenderedMessage(text="Branch storage unavailable."))
@@ -749,7 +796,11 @@ async def handle_branch(
     if not subcmd:
         branches = await facade.conv_branches.list(project, status="active")
         if not branches:
-            await send(RenderedMessage(text=f"프로젝트 `{project}`에 활성 대화 분기가 없습니다."))
+            await send(
+                RenderedMessage(
+                    text=f"프로젝트 `{project}`에 활성 대화 분기가 없습니다."
+                )
+            )
             return
         lines = [f"**Active branches — {project}**", ""]
         for b in branches:
@@ -763,7 +814,11 @@ async def handle_branch(
             await send(RenderedMessage(text="Usage: `!branch create <label>`"))
             return
         branch = await facade.conv_branches.create(project, subargs)
-        await send(RenderedMessage(text=f"Branch created: `{branch.branch_id[:16]}` **{branch.label}**"))
+        await send(
+            RenderedMessage(
+                text=f"Branch created: `{branch.branch_id[:16]}` **{branch.label}**"
+            )
+        )
         return
 
     if subcmd == "list":
@@ -833,7 +888,9 @@ async def handle_branch(
     if subcmd == "link-git":
         link_parts = subargs.split(None, 1)
         if len(link_parts) < 2:
-            await send(RenderedMessage(text="Usage: `!branch link-git <id> <git-branch>`"))
+            await send(
+                RenderedMessage(text="Usage: `!branch link-git <id> <git-branch>`")
+            )
             return
         bid_raw, git_branch = link_parts
         branch_id, err = await _resolve_id(
@@ -846,9 +903,15 @@ async def handle_branch(
             await send(RenderedMessage(text=err))
             return
         assert branch_id is not None
-        linked = await facade.conv_branches.link_git_branch(project, branch_id, git_branch)
+        linked = await facade.conv_branches.link_git_branch(
+            project, branch_id, git_branch
+        )
         if linked:
-            await send(RenderedMessage(text=f"Branch `{branch_id[:16]}` linked to `{git_branch}`."))
+            await send(
+                RenderedMessage(
+                    text=f"Branch `{branch_id[:16]}` linked to `{git_branch}`."
+                )
+            )
         else:
             await send(RenderedMessage(text=f"Branch `{bid_raw}` not found."))
         return
@@ -877,7 +940,9 @@ async def handle_review(
 ) -> None:
     """Manage review requests."""
     if not project:
-        await send(RenderedMessage(text="프로젝트를 먼저 설정하세요. `!project set <name>`"))
+        await send(
+            RenderedMessage(text="프로젝트를 먼저 설정하세요. `!project set <name>`")
+        )
         return
     if not facade:
         await send(RenderedMessage(text="Review storage unavailable."))
@@ -890,11 +955,17 @@ async def handle_review(
     if not subcmd:
         reviews = await facade.reviews.list(project, status="pending")
         if not reviews:
-            await send(RenderedMessage(text=f"프로젝트 `{project}`에 대기 중인 리뷰가 없습니다."))
+            await send(
+                RenderedMessage(
+                    text=f"프로젝트 `{project}`에 대기 중인 리뷰가 없습니다."
+                )
+            )
             return
         lines = [f"**Pending reviews — {project}**", ""]
         for r in reviews:
-            lines.append(f"- `{r.review_id[:16]}` artifact `{r.artifact_id[:16]}` v{r.artifact_version} ({r.created_at})")
+            lines.append(
+                f"- `{r.review_id[:16]}` artifact `{r.artifact_id[:16]}` v{r.artifact_version} ({r.created_at})"
+            )
         await send(RenderedMessage(text="\n".join(lines)))
         return
 
@@ -915,7 +986,9 @@ async def handle_review(
             return
         lines = [f"**Reviews — {project}**", ""]
         for r in reviews:
-            lines.append(f"- `{r.review_id[:16]}` [{r.status}] artifact `{r.artifact_id[:16]}` v{r.artifact_version}")
+            lines.append(
+                f"- `{r.review_id[:16]}` [{r.status}] artifact `{r.artifact_id[:16]}` v{r.artifact_version}"
+            )
         await send(RenderedMessage(text="\n".join(lines)))
         return
 
@@ -988,7 +1061,9 @@ async def handle_context(
 ) -> None:
     """Show full project context."""
     if not project:
-        await send(RenderedMessage(text="프로젝트를 먼저 설정하세요. `!project set <name>`"))
+        await send(
+            RenderedMessage(text="프로젝트를 먼저 설정하세요. `!project set <name>`")
+        )
         return
     if not facade:
         await send(RenderedMessage(text="Context storage unavailable."))
@@ -996,7 +1071,9 @@ async def handle_context(
 
     ctx = await facade.get_project_context(project)
     if not ctx:
-        await send(RenderedMessage(text=f"프로젝트 `{project}`에 저장된 컨텍스트가 없습니다."))
+        await send(
+            RenderedMessage(text=f"프로젝트 `{project}`에 저장된 컨텍스트가 없습니다.")
+        )
     else:
         await send(RenderedMessage(text=ctx))
 
@@ -1016,7 +1093,10 @@ async def _resolve_id[T](
     Returns ``(resolved_id, None)`` on success or ``(None, error_message)`` on failure.
     """
     if len(prefix) < _MIN_PREFIX_LEN:
-        return None, f"ID prefix too short (minimum {_MIN_PREFIX_LEN} chars): `{prefix}`"
+        return (
+            None,
+            f"ID prefix too short (minimum {_MIN_PREFIX_LEN} chars): `{prefix}`",
+        )
 
     items = await fetch_all()
     # Exact match first

@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import contextlib
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, is_dataclass, replace
 from pathlib import Path
 from collections.abc import Awaitable, Callable
 from typing import TYPE_CHECKING, Any
@@ -24,13 +24,22 @@ from ..logging import bind_run_context, get_logger
 from ..model import ResumeToken
 from ..runner_bridge import IncomingMessage, handle_message
 from ..runners.run_options import EngineRunOptions, apply_run_options
-from ..transport import MessageRef, RenderedMessage
+from ..transport import MessageRef, RenderedMessage, SendOptions
 from ..utils.paths import reset_run_base_dir, set_run_base_dir
 from .bridge import CANCEL_EMOJI, MattermostBridgeConfig
 from .chat_prefs import ChatPrefsStore
 from ..core.project_sessions import ProjectSessionStore
 from .chat_sessions import ChatSessionStore
 from ..core.commands import parse_command
+from ..core.cross_roundtable import (
+    CrossRTStatus,
+    ThreadPost,
+    build_agent_prompt,
+    derive_state,
+    format_control_marker,
+    format_metadata_marker,
+    parse_metadata,
+)
 from .commands import (
     handle_branch,
     handle_cancel,
@@ -45,6 +54,7 @@ from .commands import (
     handle_rt,
     handle_status,
     handle_trigger,
+    parse_cross_rt_start,
 )
 from .roundtable import (
     RoundtableSession,
@@ -376,6 +386,269 @@ async def _start_roundtable(
         roundtables.complete(thread_id)
 
 
+async def _start_multi_agent_roundtable(
+    channel_id: str,
+    topic: str,
+    participants: list[str],
+    *,
+    cfg: MattermostBridgeConfig,
+) -> tuple[str, str, str] | None:
+    """Create the root Thread and kick off a cross-instance roundtable."""
+    max_rounds = cfg.cross_roundtable_max_rounds
+    participants_display = " ".join(f"@{p}" for p in participants)
+    metadata_marker = format_metadata_marker(
+        topic=topic,
+        participants=participants,
+        max_rounds=max_rounds,
+    )
+    header = (
+        "🎯 **圆桌会议已开启**\n\n"
+        f"**主题:** {topic}\n"
+        f"**参与 Agent:** {participants_display}\n"
+        f"**轮次上限:** {max_rounds}\n\n"
+        "控制: `!rt stop` | `!rt resume` | `!rt close` | `!rt status`\n\n"
+        f"{metadata_marker}"
+    )
+    ref = await cfg.exec_cfg.transport.send(
+        channel_id=channel_id,
+        message=RenderedMessage(text=header),
+    )
+    if ref is None:
+        logger.error("cross_roundtable.header_send_failed", channel_id=channel_id)
+        return None
+
+    root_post_id = str(ref.message_id)
+    first = participants[0]
+    second = participants[1]
+    kickoff = (
+        f"@{first} 圆桌讨论开始。\n\n"
+        f"**主题:** {topic}\n\n"
+        f"请发表你的观点。完成后如果需要继续，请 @{second}。\n\n"
+        f"{format_control_marker('kickoff')}"
+    )
+    await cfg.exec_cfg.transport.send(
+        channel_id=channel_id,
+        message=RenderedMessage(text=kickoff),
+        options=SendOptions(thread_id=root_post_id),
+    )
+    return root_post_id, header, kickoff
+
+
+async def _thread_posts_from_post_list(
+    cfg: MattermostBridgeConfig,
+    post_list: Any,
+) -> list[ThreadPost]:
+    """Convert Mattermost PostList into transport-neutral ThreadPost objects."""
+    result: list[ThreadPost] = []
+    user_cache: dict[str, str] = {}
+    posts = getattr(post_list, "posts", {}) or {}
+    order = list(getattr(post_list, "order", []) or posts.keys())
+
+    for post_id in order:
+        post = posts.get(post_id)
+        if post is None:
+            continue
+        user_id = getattr(post, "user_id", "")
+        username = user_cache.get(user_id)
+        if username is None:
+            user = await cfg.bot.get_user(user_id) if user_id else None
+            username = user.username if user is not None else ""
+            user_cache[user_id] = username
+        result.append(
+            ThreadPost(
+                sender_username=username,
+                message=getattr(post, "message", ""),
+                created_at=getattr(post, "create_at", 0),
+                root_id=getattr(post, "root_id", ""),
+            )
+        )
+    return result
+
+
+def _find_cross_rt_metadata(posts: list[ThreadPost]):
+    for post in posts:
+        metadata = parse_metadata(post.message)
+        if metadata is not None:
+            return metadata
+    return None
+
+
+def _mentions_bot(text: str, bot_username: str) -> bool:
+    if not bot_username:
+        return False
+    pattern = rf"(?<![A-Za-z0-9_.-])@{re.escape(bot_username)}(?![A-Za-z0-9_.-])"
+    return re.search(pattern, text, flags=re.IGNORECASE) is not None
+
+
+def _stateless_cross_roundtable_cfg(
+    cfg: MattermostBridgeConfig,
+) -> MattermostBridgeConfig:
+    """Run cross-roundtable prompts without channel-level resume state."""
+    if cfg.session_mode == "stateless":
+        return cfg
+    if is_dataclass(cfg):
+        return replace(cfg, session_mode="stateless")
+    cfg.session_mode = "stateless"
+    return cfg
+
+
+async def _run_cross_roundtable_engine(
+    resolved_prompt: _ResolvedPrompt,
+    msg: MattermostIncomingMessage,
+    cfg: MattermostBridgeConfig,
+    running_tasks: RunningTasks,
+    sessions: ChatSessionStore,
+    chat_prefs: ChatPrefsStore | None,
+    send: _SendFn,
+) -> None:
+    await _run_engine(
+        resolved_prompt,
+        msg,
+        _stateless_cross_roundtable_cfg(cfg),
+        running_tasks,
+        sessions,
+        chat_prefs,
+        send,
+    )
+
+
+async def _try_dispatch_cross_roundtable(
+    msg: MattermostIncomingMessage,
+    cfg: MattermostBridgeConfig,
+    running_tasks: RunningTasks,
+    sessions: ChatSessionStore,
+    chat_prefs: ChatPrefsStore | None,
+    send: _SendFn,
+) -> bool:
+    """Handle messages inside multi-agent roundtable Threads."""
+    if not cfg.cross_roundtable_enabled or not msg.root_id:
+        return False
+
+    post_list = await cfg.bot._client.get_thread(msg.root_id)
+    if post_list is None:
+        return False
+
+    thread_posts = await _thread_posts_from_post_list(cfg, post_list)
+    metadata = _find_cross_rt_metadata(thread_posts)
+    if metadata is None:
+        return False
+
+    state = derive_state(metadata, thread_posts)
+    cmd, args = parse_command(msg.text)
+    if cmd == "rt":
+        subcmd = args.strip().split(None, 1)[0].lower() if args.strip() else "status"
+        event = {"stop": "pause", "resume": "resume", "close": "close"}.get(subcmd)
+        if (event or subcmd == "status") and cfg.bot_username != metadata.participants[
+            0
+        ]:
+            logger.info(
+                "cross_roundtable.command_ignored_by_non_owner",
+                owner=metadata.participants[0],
+                bot=cfg.bot_username,
+                root_id=msg.root_id,
+            )
+            return True
+        if event:
+            if event == "resume" and state.status != CrossRTStatus.PAUSED:
+                await cfg.exec_cfg.transport.send(
+                    channel_id=msg.channel_id,
+                    message=RenderedMessage(text="Roundtable is not paused."),
+                    options=SendOptions(thread_id=msg.root_id),
+                )
+                return True
+            labels = {
+                "pause": "⏸ 会议已暂停。",
+                "resume": "▶ 会议已恢复。",
+                "close": "✅ 会议已结束。",
+            }
+            text = labels[event]
+            if event == "resume" and state.next_participant:
+                text = f"{text}\n\n@{state.next_participant} 会议已恢复，请继续。"
+            await cfg.exec_cfg.transport.send(
+                channel_id=msg.channel_id,
+                message=RenderedMessage(
+                    text=f"{text}\n\n{format_control_marker(event)}"
+                ),
+                options=SendOptions(thread_id=msg.root_id),
+            )
+            if event == "resume" and state.next_participant == cfg.bot_username:
+                resumed_posts = [
+                    *thread_posts,
+                    ThreadPost(
+                        sender_username=cfg.bot_username,
+                        message=format_control_marker("resume"),
+                        created_at=max((p.created_at for p in thread_posts), default=0)
+                        + 1,
+                        root_id=msg.root_id,
+                    ),
+                ]
+                resumed_state = derive_state(metadata, resumed_posts)
+                await _run_cross_roundtable_engine(
+                    _ResolvedPrompt(
+                        text=build_agent_prompt(
+                            metadata=metadata,
+                            state=resumed_state,
+                            posts=resumed_posts,
+                            current_bot=cfg.bot_username,
+                        ),
+                        file_context="",
+                    ),
+                    msg,
+                    cfg,
+                    running_tasks,
+                    sessions,
+                    chat_prefs,
+                    send,
+                )
+            return True
+        if subcmd == "status":
+            await cfg.exec_cfg.transport.send(
+                channel_id=msg.channel_id,
+                message=RenderedMessage(
+                    text=(
+                        f"Roundtable status: `{state.status.value}`\n"
+                        f"Round: `{state.current_round}/{metadata.max_rounds}`\n"
+                        f"Next: `{state.next_participant or 'none'}`\n\n"
+                        f"{format_control_marker('status')}"
+                    )
+                ),
+                options=SendOptions(thread_id=msg.root_id),
+            )
+            return True
+
+    if state.status != CrossRTStatus.ACTIVE:
+        return True
+    if msg.sender_username.lstrip("@") not in metadata.participants:
+        return True
+    if not _mentions_bot(msg.text, cfg.bot_username):
+        return True
+    if state.next_participant != cfg.bot_username:
+        logger.info(
+            "cross_roundtable.out_of_order_mention",
+            expected=state.next_participant,
+            bot=cfg.bot_username,
+            root_id=msg.root_id,
+        )
+        return True
+
+    prompt = build_agent_prompt(
+        metadata=metadata,
+        state=state,
+        posts=thread_posts,
+        current_bot=cfg.bot_username,
+    )
+    await _run_cross_roundtable_engine(
+        _ResolvedPrompt(text=prompt, file_context=""),
+        msg,
+        cfg,
+        running_tasks,
+        sessions,
+        chat_prefs,
+        send,
+    )
+    return True
+
+
 @dataclass(slots=True)
 class _ResolvedPrompt:
     """Result of prompt resolution before engine dispatch."""
@@ -427,7 +700,11 @@ async def _archive_roundtable(
     if facade and project and session.transcript:
         with contextlib.suppress(Exception):
             await facade.save_roundtable(
-                session, project, branch_name=branch, auto_synthesis=True, auto_structured=True
+                session,
+                project,
+                branch_name=branch,
+                auto_synthesis=True,
+                auto_structured=True,
             )
 
     await send(RenderedMessage(text="🔴 라운드테이블이 종료되었습니다."))
@@ -443,15 +720,94 @@ async def _dispatch_rt_command(
     send: _SendFn,
     journal: Journal | None = None,
     facade: ProjectMemoryFacade | None = None,
+    sessions: ChatSessionStore | None = None,
 ) -> None:
     """Handle the !rt / /rt command, including follow-up and close."""
+    stripped = args.strip()
+    if stripped.lower() in {"status", "stop", "resume", "close"} and not msg.root_id:
+        await send(
+            RenderedMessage(
+                text="Cross-roundtable control commands must be used inside a roundtable Thread."
+            )
+        )
+        return
+
+    if stripped.lower() == "start" or stripped.lower().startswith("start "):
+        if not cfg.cross_roundtable_enabled:
+            await send(RenderedMessage(text="⚠️ Multi-agent roundtable is disabled."))
+            return
+        start_args = stripped[len("start") :].strip()
+        participants, topic, error = parse_cross_rt_start(start_args)
+        if error:
+            await send(RenderedMessage(text=f"⚠️ {error}"))
+            return
+        if cfg.bot_username != participants[0]:
+            logger.info(
+                "cross_roundtable.start_ignored_by_non_owner",
+                owner=participants[0],
+                bot=cfg.bot_username,
+                channel_id=msg.channel_id,
+            )
+            return
+        start_result = await _start_multi_agent_roundtable(
+            msg.channel_id,
+            topic,
+            participants,
+            cfg=cfg,
+        )
+        if start_result is None:
+            return
+        root_post_id, header, kickoff = start_result
+        metadata = parse_metadata(header)
+        if metadata is not None:
+            thread_posts = [
+                ThreadPost(
+                    sender_username=msg.sender_username,
+                    message=header,
+                    created_at=0,
+                    root_id=root_post_id,
+                ),
+                ThreadPost(
+                    sender_username=cfg.bot_username,
+                    message=kickoff,
+                    created_at=1,
+                    root_id=root_post_id,
+                ),
+            ]
+            state = derive_state(metadata, thread_posts)
+            starter_msg = MattermostIncomingMessage(
+                channel_id=msg.channel_id,
+                post_id=root_post_id,
+                text=kickoff,
+                root_id=root_post_id,
+                sender_id=cfg.bot_user_id,
+                sender_username=cfg.bot_username,
+                channel_type=msg.channel_type,
+            )
+            await _run_cross_roundtable_engine(
+                _ResolvedPrompt(
+                    text=build_agent_prompt(
+                        metadata=metadata,
+                        state=state,
+                        posts=thread_posts,
+                        current_bot=cfg.bot_username,
+                    ),
+                    file_context="",
+                ),
+                starter_msg,
+                cfg,
+                running_tasks,
+                sessions or ChatSessionStore(_CONFIG_DIR / "mattermost_sessions.json"),
+                chat_prefs,
+                send,
+            )
+        return
+
     continue_rt = None
     close_rt = None
 
     # Resolve project/branch for project-memory archive
-    _ambient_ctx = (
-        await chat_prefs.get_context(msg.channel_id) if chat_prefs else None
-    )
+    _ambient_ctx = await chat_prefs.get_context(msg.channel_id) if chat_prefs else None
     _pm_project = _ambient_ctx.project if _ambient_ctx else None
     _pm_branch = _ambient_ctx.branch if _ambient_ctx else None
 
@@ -459,6 +815,7 @@ async def _dispatch_rt_command(
         # Check for completed session (follow-up / close)
         completed_session = roundtables.get_completed(msg.root_id)
         if completed_session:
+
             async def continue_rt(
                 topic: str,
                 engines_filter: list[str] | None,
@@ -482,8 +839,12 @@ async def _dispatch_rt_command(
                 _s: RoundtableSession = completed_session,
             ) -> None:
                 await _archive_roundtable(
-                    _s, journal, send,
-                    facade=facade, project=_pm_project, branch=_pm_branch,
+                    _s,
+                    journal,
+                    send,
+                    facade=facade,
+                    project=_pm_project,
+                    branch=_pm_branch,
                 )
                 _rt.remove(_tid)
 
@@ -500,8 +861,12 @@ async def _dispatch_rt_command(
                 if session:
                     session.cancel_event.set()
                     await _archive_roundtable(
-                        session, journal, send,
-                        facade=facade, project=_pm_project, branch=_pm_branch,
+                        session,
+                        journal,
+                        send,
+                        facade=facade,
+                        project=_pm_project,
+                        branch=_pm_branch,
                     )
                 _rt.remove(_tid)
 
@@ -599,7 +964,11 @@ async def _try_dispatch_command(
             )
         case "memory":
             _ctx = await chat_prefs.get_context(msg.channel_id) if chat_prefs else None
-            _engine = (await chat_prefs.get_default_engine(msg.channel_id)) if chat_prefs else None
+            _engine = (
+                (await chat_prefs.get_default_engine(msg.channel_id))
+                if chat_prefs
+                else None
+            )
             await handle_memory(
                 args,
                 project=_ctx.project if _ctx else None,
@@ -641,6 +1010,7 @@ async def _try_dispatch_command(
                 send,
                 journal=journal,
                 facade=facade,
+                sessions=sessions,
             )
         case "status":
             has_session = await sessions.has_any(msg.channel_id)
@@ -956,6 +1326,17 @@ async def _dispatch_message(
 
     async def send(message: RenderedMessage) -> None:
         await _send_to_channel(cfg, msg.channel_id, message)
+
+    # 0. Cross-instance roundtable Thread handling
+    if await _try_dispatch_cross_roundtable(
+        msg,
+        cfg,
+        running_tasks,
+        sessions,
+        chat_prefs,
+        send,
+    ):
+        return
 
     # 1. Command handling
     if await _try_dispatch_command(

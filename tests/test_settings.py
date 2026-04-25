@@ -176,6 +176,36 @@ def test_transport_config_telegram_and_extra(tmp_path: Path) -> None:
         settings.transport_config("custom_chat", config_path=config_path)
 
 
+def test_transport_config_mattermost_cross_roundtable(tmp_path: Path) -> None:
+    config_path = tmp_path / "tunapi.toml"
+    config_path.write_text(
+        'transport = "mattermost"\n\n'
+        "[transports.mattermost]\n"
+        'url = "http://mattermost.local"\n'
+        'token = "token"\n\n'
+        "[transports.mattermost.cross_roundtable]\n"
+        "enabled = true\n"
+        "max_rounds = 4\n"
+        "timeout_minutes = 7\n",
+        encoding="utf-8",
+    )
+
+    settings, loaded_path = load_settings(config_path)
+    mattermost = settings.transports.mattermost
+    transport_config = settings.transport_config("mattermost", config_path=config_path)
+
+    assert loaded_path == config_path
+    assert mattermost is not None
+    assert mattermost.cross_roundtable.enabled is True
+    assert mattermost.cross_roundtable.max_rounds == 4
+    assert mattermost.cross_roundtable.timeout_minutes == 7
+    assert transport_config["cross_roundtable"] == {
+        "enabled": True,
+        "max_rounds": 4,
+        "timeout_minutes": 7,
+    }
+
+
 def test_transport_config_telegram_missing(tmp_path: Path) -> None:
     config_path = tmp_path / "tunapi.toml"
     settings = TunapiSettings.model_validate(

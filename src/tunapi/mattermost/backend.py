@@ -64,6 +64,7 @@ class MattermostBackend(TransportBackend):
 
         files_cfg = transport_config.get("files", {})
         voice_cfg = transport_config.get("voice", {})
+        cross_rt_cfg = transport_config.get("cross_roundtable", {})
 
         startup_msg = build_startup_message(
             runtime,
@@ -99,6 +100,7 @@ class MattermostBackend(TransportBackend):
             "trigger_mode": trigger_mode,
             "files_cfg": files_cfg,
             "voice_cfg": voice_cfg,
+            "cross_rt_cfg": cross_rt_cfg,
             "transport_config": transport_config,
             "default_engine_override": default_engine_override,
         }
@@ -118,6 +120,7 @@ class MattermostBackend(TransportBackend):
         runtime = p["runtime"]
         files_cfg = p["files_cfg"]
         voice_cfg = p["voice_cfg"]
+        cross_rt_cfg = p["cross_rt_cfg"]
 
         me = await bot.get_me()
         bot_user_id = me.id if me else ""
@@ -146,9 +149,7 @@ class MattermostBackend(TransportBackend):
                     "deny_globs", [".git/**", ".env", ".envrc", "*.pem", ".ssh/**"]
                 )
             ),
-            files_max_upload_bytes=files_cfg.get(
-                "max_upload_bytes", 20 * 1024 * 1024
-            ),
+            files_max_upload_bytes=files_cfg.get("max_upload_bytes", 20 * 1024 * 1024),
             files_max_download_bytes=files_cfg.get(
                 "max_download_bytes", 50 * 1024 * 1024
             ),
@@ -158,6 +159,9 @@ class MattermostBackend(TransportBackend):
             voice_base_url=voice_cfg.get("base_url"),
             voice_api_key=voice_cfg.get("api_key"),
             projects_root=runtime.projects_root,
+            cross_roundtable_enabled=cross_rt_cfg.get("enabled", False),
+            cross_roundtable_max_rounds=cross_rt_cfg.get("max_rounds", 3),
+            cross_roundtable_timeout_minutes=cross_rt_cfg.get("timeout_minutes", 5),
         )
 
         from .loop import run_main_loop

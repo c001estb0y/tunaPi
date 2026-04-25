@@ -16,6 +16,7 @@ from .api_models import (
     Channel,
     FileInfo,
     Post,
+    PostList,
     User,
     WebSocketAuthReply,
     WebSocketEvent,
@@ -253,6 +254,10 @@ class HttpMattermostClient:
     async def get_post(self, post_id: str) -> Post | None:
         result = await self._get(f"/posts/{post_id}")
         return self._decode_result(method="get_post", payload=result, model=Post)
+
+    async def get_thread(self, root_post_id: str) -> PostList | None:
+        result = await self._get(f"/posts/{root_post_id}/thread")
+        return self._decode_result(method="get_thread", payload=result, model=PostList)
 
     async def update_post(
         self,

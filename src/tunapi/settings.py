@@ -141,6 +141,14 @@ class MattermostVoiceSettings(BaseModel):
     api_key: NonEmptyStr | None = None
 
 
+class MattermostCrossRoundtableSettings(BaseModel):
+    model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
+
+    enabled: bool = False
+    max_rounds: int = Field(default=3, ge=1)
+    timeout_minutes: int = Field(default=5, ge=1)
+
+
 class RoundtableSettings(BaseModel):
     model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
 
@@ -218,6 +226,9 @@ class MattermostTransportSettings(BaseModel):
     trigger_mode: Literal["all", "mentions"] = "all"
     files: MattermostFilesSettings = Field(default_factory=MattermostFilesSettings)
     voice: MattermostVoiceSettings = Field(default_factory=MattermostVoiceSettings)
+    cross_roundtable: MattermostCrossRoundtableSettings = Field(
+        default_factory=MattermostCrossRoundtableSettings
+    )
 
     @model_validator(mode="before")
     @classmethod
@@ -359,9 +370,7 @@ class TunapiSettings(BaseSettings):
             )
         return raw
 
-    def resolve_transport_ids(
-        self, *, override: str | None = None
-    ) -> list[str]:
+    def resolve_transport_ids(self, *, override: str | None = None) -> list[str]:
         """Return the list of transport ids to run.
 
         Priority:

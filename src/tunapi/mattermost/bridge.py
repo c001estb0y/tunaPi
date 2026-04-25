@@ -179,3 +179,6 @@ class MattermostBridgeConfig:
     voice_base_url: str | None = None
     voice_api_key: str | None = None
     projects_root: str | None = None
+    cross_roundtable_enabled: bool = False
+    cross_roundtable_max_rounds: int = 3
+    cross_roundtable_timeout_minutes: int = 5
