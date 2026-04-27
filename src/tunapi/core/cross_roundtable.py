@@ -145,6 +145,34 @@ def is_system_marker_post(text: str) -> bool:
     return parse_metadata(text) is not None or _CONTROL_RE.search(text) is not None
 
 
+_PROGRESS_MESSAGE_RE = re.compile(
+    r"^\s*(working|starting|thinking|running)\s*[·.-]\s*\w+\s*$",
+    re.IGNORECASE,
+)
+
+
+def is_progress_marker_post(text: str) -> bool:
+    stripped = text.strip()
+    if not stripped:
+        return True
+    if _PROGRESS_MESSAGE_RE.match(stripped):
+        return True
+    if stripped.lower().startswith("resume token:"):
+        return True
+    return False
+
+
+def meaningful_thread_posts(posts: list[ThreadPost]) -> list[ThreadPost]:
+    result: list[ThreadPost] = []
+    for post in sorted(posts, key=lambda p: p.created_at):
+        if is_system_marker_post(post.message):
+            continue
+        if is_progress_marker_post(post.message):
+            continue
+        result.append(post)
+    return result
+
+
 def _participant_turns(posts: list[ThreadPost], participants: list[str]) -> list[str]:
     participant_set = set(participants)
     turns: list[str] = []
@@ -270,4 +298,68 @@ def build_agent_prompt(
         "2. 发言保持简洁，默认不超过 300 字。\n"
         f"3. {next_instruction}\n"
         "4. 不要伪造控制命令；暂停、恢复、结束只由 !rt 控制。"
+    )
+
+
+def build_thread_context_prompt(
+    *,
+    posts: list[ThreadPost],
+    current_request: str,
+    metadata: CrossRTMetadata | None = None,
+    state: CrossRTState | None = None,
+    max_posts: int = 20,
+    max_chars: int = 12_000,
+) -> str:
+    meaningful = meaningful_thread_posts(posts)
+    selected = meaningful[-max_posts:] if max_posts > 0 else meaningful
+
+    header_lines = ["[Thread context]"]
+    if metadata is not None:
+        header_lines.append(
+            "This Mattermost Thread previously contained a multi-agent roundtable."
+        )
+        header_lines.append(f"Topic: {metadata.topic}")
+        header_lines.append(f"Participants: {', '.join(metadata.participants)}")
+    if state is not None:
+        header_lines.append(f"Status: {state.status.value}")
+
+    message_lines = ["", "Recent Thread messages:"]
+    for post in selected:
+        sender = post.sender_username.lstrip("@") or "unknown"
+        message_lines.append(f"[{sender}]: {post.message.strip()}")
+
+    result = "\n".join(
+        [
+            *header_lines,
+            *message_lines,
+            "",
+            "[Current request]",
+            current_request.strip(),
+        ]
+    )
+
+    if len(result) <= max_chars:
+        return result
+
+    truncated_messages: list[str] = []
+    budget = max_chars - len("\n".join(header_lines)) - len(current_request) - 80
+    used = 0
+    for line in reversed(message_lines[2:]):
+        line_length = len(line) + 1
+        if used + line_length > max(budget, 0):
+            break
+        truncated_messages.append(line)
+        used += line_length
+    truncated_messages.reverse()
+
+    return "\n".join(
+        [
+            *header_lines,
+            "",
+            "Recent Thread messages:",
+            *truncated_messages,
+            "",
+            "[Current request]",
+            current_request.strip(),
+        ]
     )

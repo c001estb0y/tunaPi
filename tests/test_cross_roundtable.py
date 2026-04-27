@@ -3,12 +3,16 @@
 from __future__ import annotations
 
 from tunapi.core.cross_roundtable import (
+    CrossRTMetadata,
+    CrossRTState,
     CrossRTStatus,
     ThreadPost,
     build_agent_prompt,
+    build_thread_context_prompt,
     derive_state,
     format_control_marker,
     format_metadata_marker,
+    meaningful_thread_posts,
     parse_metadata,
 )
 
@@ -265,3 +269,89 @@ def test_build_agent_prompt_uses_expected_speaker_for_out_of_order_mention():
     )
 
     assert "@b" in prompt
+
+
+def test_meaningful_thread_posts_filters_roundtable_system_noise():
+    posts = [
+        ThreadPost(
+            sender_username="minusjiang",
+            message='<!-- tunapi:roundtable {"version":1,"topic":"计算器","participants":["kaixing","codeview"],"max_rounds":1} -->',
+            created_at=1,
+            root_id="root1",
+        ),
+        ThreadPost(
+            sender_username="kaixing",
+            message="working · codex",
+            created_at=2,
+            root_id="root1",
+        ),
+        ThreadPost(
+            sender_username="kaixing",
+            message="可以先实现加减乘除 @codeview",
+            created_at=3,
+            root_id="root1",
+        ),
+        ThreadPost(
+            sender_username="codeview",
+            message="后端建议补充输入校验",
+            created_at=4,
+            root_id="root1",
+        ),
+    ]
+
+    result = meaningful_thread_posts(posts)
+
+    assert [post.message for post in result] == [
+        "可以先实现加减乘除 @codeview",
+        "后端建议补充输入校验",
+    ]
+
+
+def test_build_thread_context_prompt_includes_roundtable_summary_fields():
+    metadata = CrossRTMetadata(
+        topic="讨论计算器实现",
+        participants=["kaixing", "codeview"],
+        max_rounds=1,
+    )
+    state = CrossRTState(
+        metadata=metadata,
+        status=CrossRTStatus.CLOSED,
+        current_round=1,
+        next_participant=None,
+    )
+    posts = [
+        ThreadPost(
+            sender_username="minusjiang",
+            message="讨论计算器实现",
+            created_at=1,
+            root_id="root1",
+        ),
+        ThreadPost(
+            sender_username="kaixing",
+            message="前端用一个表单和结果区 @codeview",
+            created_at=2,
+            root_id="root1",
+        ),
+        ThreadPost(
+            sender_username="codeview",
+            message="后端只需要纯函数和单元测试",
+            created_at=3,
+            root_id="root1",
+        ),
+    ]
+
+    prompt = build_thread_context_prompt(
+        posts=posts,
+        current_request="总结一下上述讨论",
+        metadata=metadata,
+        state=state,
+        max_posts=20,
+        max_chars=12_000,
+    )
+
+    assert "Topic: 讨论计算器实现" in prompt
+    assert "Participants: kaixing, codeview" in prompt
+    assert "Status: closed" in prompt
+    assert "[kaixing]: 前端用一个表单和结果区 @codeview" in prompt
+    assert "[codeview]: 后端只需要纯函数和单元测试" in prompt
+    assert "[Current request]\n总结一下上述讨论" in prompt

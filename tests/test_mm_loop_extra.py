@@ -9,6 +9,7 @@ import pytest
 
 from tunapi.core.commands import parse_command
 from tunapi.core.roundtable import RoundtableSession, RoundtableStore
+from tunapi.mattermost.api_models import Post, PostList, User
 from tunapi.mattermost.loop import (
     _ResolvedPrompt,
     _archive_roundtable,
@@ -571,6 +572,156 @@ class TestResolvePrompt:
             result = await _resolve_prompt(msg, cfg, None, send)
 
         assert result is None
+
+    @pytest.mark.anyio()
+    async def test_completed_roundtable_thread_human_mention_gets_thread_context(self):
+        cfg = _make_cfg(bot_username="kaixing")
+        cfg.cross_roundtable_enabled = True
+        cfg.bot = MagicMock()
+        cfg.bot._client = MagicMock()
+        cfg.bot._client.get_thread = AsyncMock(
+            return_value=PostList(
+                order=["root1", "p1", "p2", "human1"],
+                posts={
+                    "root1": Post(
+                        id="root1",
+                        channel_id="ch1",
+                        user_id="u-human",
+                        message='<!-- tunapi:roundtable {"version":1,"topic":"讨论计算器实现","participants":["kaixing","codeview"],"max_rounds":1} -->',
+                    ),
+                    "p1": Post(
+                        id="p1",
+                        channel_id="ch1",
+                        user_id="u-kaixing",
+                        root_id="root1",
+                        message="前端使用表单和结果区 @codeview",
+                        create_at=1,
+                    ),
+                    "p2": Post(
+                        id="p2",
+                        channel_id="ch1",
+                        user_id="u-codeview",
+                        root_id="root1",
+                        message="后端使用纯函数和单元测试",
+                        create_at=2,
+                    ),
+                    "human1": Post(
+                        id="human1",
+                        channel_id="ch1",
+                        user_id="u-human",
+                        root_id="root1",
+                        message="@kaixing 总结一下上述讨论",
+                        create_at=3,
+                    ),
+                },
+            )
+        )
+        cfg.bot.get_user = AsyncMock(
+            side_effect=lambda user_id: User(
+                id=user_id,
+                username={
+                    "u-human": "minusjiang",
+                    "u-kaixing": "kaixing",
+                    "u-codeview": "codeview",
+                }[user_id],
+                is_bot=user_id != "u-human",
+            )
+        )
+        msg = _make_msg(
+            text="@kaixing 总结一下上述讨论",
+            root_id="root1",
+            sender_id="u-human",
+            sender_username="minusjiang",
+        )
+
+        with patch("tunapi.mattermost.loop._run_engine", new_callable=AsyncMock) as run:
+            await _dispatch_message(
+                msg,
+                cfg,
+                {},
+                MagicMock(),
+                None,
+            )
+
+        run.assert_awaited_once()
+        resolved = run.await_args.args[0]
+        assert "Topic: 讨论计算器实现" in resolved.text
+        assert "Participants: kaixing, codeview" in resolved.text
+        assert "[kaixing]: 前端使用表单和结果区 @codeview" in resolved.text
+        assert "[codeview]: 后端使用纯函数和单元测试" in resolved.text
+        assert "[Current request]\n总结一下上述讨论" in resolved.text
+
+    @pytest.mark.anyio()
+    async def test_external_mention_gets_busy_message_while_roundtable_engine_running(
+        self,
+    ):
+        cfg = _make_cfg(bot_username="kaixing")
+        cfg.cross_roundtable_enabled = True
+        cfg.bot = MagicMock()
+        cfg.bot.get_user = AsyncMock(return_value=User(id="u-human", is_bot=False))
+        msg = _make_msg(
+            text="@kaixing 你现在能回答另一个问题吗",
+            sender_id="u-human",
+            sender_username="minusjiang",
+        )
+        send_calls: list[RenderedMessage] = []
+
+        with patch("tunapi.mattermost.loop._is_roundtable_busy", return_value=True):
+            with patch(
+                "tunapi.mattermost.loop._send_to_channel",
+                new_callable=AsyncMock,
+            ) as send:
+                send.side_effect = (
+                    lambda _cfg, _channel_id, message: send_calls.append(message)
+                )
+                with patch(
+                    "tunapi.mattermost.loop._run_engine",
+                    new_callable=AsyncMock,
+                ) as run:
+                    await _dispatch_message(
+                        msg,
+                        cfg,
+                        {},
+                        MagicMock(),
+                        None,
+                    )
+
+        run.assert_not_awaited()
+        assert send_calls
+        assert "正在参与圆桌讨论中" in send_calls[0].text
+
+    @pytest.mark.anyio()
+    async def test_roundtable_busy_state_clears_when_engine_raises(self):
+        from tunapi.mattermost.loop import (
+            _is_roundtable_busy,
+            _run_cross_roundtable_engine,
+        )
+
+        cfg = _make_cfg(bot_username="kaixing")
+        resolved = _ResolvedPrompt(text="roundtable prompt", file_context="")
+        msg = _make_msg(
+            text="前端视角 @kaixing",
+            root_id="root1",
+            sender_username="codeview",
+        )
+
+        with patch(
+            "tunapi.mattermost.loop._run_engine",
+            new_callable=AsyncMock,
+            side_effect=RuntimeError("boom"),
+        ):
+            with pytest.raises(RuntimeError, match="boom"):
+                await _run_cross_roundtable_engine(
+                    resolved,
+                    msg,
+                    cfg,
+                    {},
+                    MagicMock(),
+                    None,
+                    AsyncMock(),
+                )
+
+        assert _is_roundtable_busy(cfg) is False
 
 
 # ---------------------------------------------------------------------------

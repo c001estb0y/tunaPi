@@ -35,6 +35,7 @@ from ..core.cross_roundtable import (
     CrossRTStatus,
     ThreadPost,
     build_agent_prompt,
+    build_thread_context_prompt,
     derive_state,
     format_control_marker,
     format_metadata_marker,
@@ -79,6 +80,7 @@ type _SendFn = Callable[[RenderedMessage], Awaitable[None]]
 _CONFIG_DIR = Path.home() / ".tunapi"
 _SHUTDOWN_STATE_FILE = _CONFIG_DIR / "last_shutdown.json"
 _USER_IS_BOT_CACHE: dict[str, bool] = {}
+_ROUNDTABLE_BUSY_BOTS: set[str] = set()
 
 
 def _resolve_upload_dir(cfg: MattermostBridgeConfig, channel_id: str) -> Path:
@@ -507,6 +509,41 @@ def _mentions_bot(text: str, bot_username: str) -> bool:
     return re.search(pattern, text, flags=re.IGNORECASE) is not None
 
 
+def _roundtable_busy_key(cfg: MattermostBridgeConfig) -> str:
+    return cfg.bot_username or cfg.bot_user_id
+
+
+def _is_roundtable_busy(cfg: MattermostBridgeConfig) -> bool:
+    return _roundtable_busy_key(cfg) in _ROUNDTABLE_BUSY_BOTS
+
+
+async def _send_busy_if_needed(
+    msg: MattermostIncomingMessage,
+    cfg: MattermostBridgeConfig,
+    send: _SendFn,
+) -> bool:
+    if not _is_roundtable_busy(cfg):
+        return False
+    if not _mentions_bot(msg.text, cfg.bot_username):
+        return False
+    bot_name = cfg.bot_username.lstrip("@")
+    await send(
+        RenderedMessage(
+            text=(
+                f"@{bot_name} 正在参与圆桌讨论中，当前不接受新的外部请求。"
+                "请稍后再试，或在圆桌 Thread 内继续讨论。"
+            )
+        )
+    )
+    logger.info(
+        "cross_roundtable.busy_external_mention_rejected",
+        bot=bot_name,
+        channel_id=msg.channel_id,
+        root_id=msg.root_id,
+    )
+    return True
+
+
 def _stateless_cross_roundtable_cfg(
     cfg: MattermostBridgeConfig,
 ) -> MattermostBridgeConfig:
@@ -528,15 +565,20 @@ async def _run_cross_roundtable_engine(
     chat_prefs: ChatPrefsStore | None,
     send: _SendFn,
 ) -> None:
-    await _run_engine(
-        resolved_prompt,
-        msg,
-        _stateless_cross_roundtable_cfg(cfg),
-        running_tasks,
-        sessions,
-        chat_prefs,
-        send,
-    )
+    key = _roundtable_busy_key(cfg)
+    _ROUNDTABLE_BUSY_BOTS.add(key)
+    try:
+        await _run_engine(
+            resolved_prompt,
+            msg,
+            _stateless_cross_roundtable_cfg(cfg),
+            running_tasks,
+            sessions,
+            chat_prefs,
+            send,
+        )
+    finally:
+        _ROUNDTABLE_BUSY_BOTS.discard(key)
 
 
 async def _try_dispatch_cross_roundtable(
@@ -644,7 +686,22 @@ async def _try_dispatch_cross_roundtable(
             return True
 
     if state.status != CrossRTStatus.ACTIVE:
-        return True
+        sender_name = msg.sender_username.lstrip("@")
+        if sender_name in metadata.participants or await _sender_is_bot(msg, cfg):
+            logger.info(
+                "cross_roundtable.non_active_bot_message_ignored",
+                status=state.status.value,
+                sender=msg.sender_username,
+                root_id=msg.root_id,
+            )
+            return True
+        logger.info(
+            "cross_roundtable.non_active_human_message_released",
+            status=state.status.value,
+            sender=msg.sender_username,
+            root_id=msg.root_id,
+        )
+        return False
     if msg.sender_username.lstrip("@") not in metadata.participants:
         return True
     if not _mentions_bot(msg.text, cfg.bot_username):
@@ -682,6 +739,43 @@ class _ResolvedPrompt:
 
     text: str
     file_context: str  # empty string if no files
+
+
+async def _prepend_thread_context(
+    msg: MattermostIncomingMessage,
+    cfg: MattermostBridgeConfig,
+    prompt_text: str,
+) -> str:
+    if not msg.root_id:
+        return prompt_text
+    try:
+        post_list = await cfg.bot._client.get_thread(msg.root_id)
+    except Exception as exc:  # noqa: BLE001
+        logger.warning(
+            "mattermost.thread_context_load_failed",
+            root_id=msg.root_id,
+            error=str(exc),
+        )
+        return (
+            "[Thread context]\n"
+            "Thread history could not be loaded for this request.\n\n"
+            "[Current request]\n"
+            f"{prompt_text}"
+        )
+    if post_list is None:
+        return prompt_text
+
+    thread_posts = await _thread_posts_from_post_list(cfg, post_list)
+    metadata = _find_cross_rt_metadata(thread_posts)
+    state = derive_state(metadata, thread_posts) if metadata is not None else None
+    return build_thread_context_prompt(
+        posts=thread_posts,
+        current_request=prompt_text,
+        metadata=metadata,
+        state=state,
+        max_posts=20,
+        max_chars=12_000,
+    )
 
 
 async def _archive_roundtable(
@@ -1118,6 +1212,8 @@ async def _resolve_prompt(
     if not prompt_text:
         return None
 
+    prompt_text = await _prepend_thread_context(msg, cfg, prompt_text)
+
     return _ResolvedPrompt(text=prompt_text, file_context=file_context)
 
 
@@ -1388,6 +1484,9 @@ async def _dispatch_message(
         facade=facade,
         project_sessions=project_sessions,
     ):
+        return
+
+    if await _send_busy_if_needed(msg, cfg, send):
         return
 
     # 2. Prompt resolution (files, voice, trigger, mention strip)

@@ -16,6 +16,7 @@ def _make_msg(
     text: str,
     *,
     root_id: str = "",
+    sender_id: str = "user-in",
     sender_username: str = "minusjiang",
 ) -> MattermostIncomingMessage:
     return MattermostIncomingMessage(
@@ -23,7 +24,7 @@ def _make_msg(
         post_id="post-in",
         text=text,
         root_id=root_id,
-        sender_id="user-in",
+        sender_id=sender_id,
         sender_username=sender_username,
         channel_type="O",
     )
@@ -508,6 +509,134 @@ async def test_cross_roundtable_paused_thread_does_not_run_engine():
         )
     )
     msg = _make_msg("前端视角 @agent2", root_id="root1", sender_username="kaixing")
+
+    with patch("tunapi.mattermost.loop._run_engine", new_callable=AsyncMock) as run:
+        result = await _try_dispatch_cross_roundtable(
+            msg,
+            cfg,
+            {},
+            MagicMock(),
+            None,
+            AsyncMock(side_effect=_send_capture),
+        )
+
+    assert result is True
+    run.assert_not_awaited()
+
+
+@pytest.mark.anyio
+async def test_closed_roundtable_human_mention_is_released_to_normal_chat():
+    cfg = _make_cfg(bot_username="kaixing")
+    cfg.bot._client.get_thread = AsyncMock(
+        return_value=PostList(
+            order=["root1", "p1", "p2"],
+            posts={
+                "root1": Post(
+                    id="root1",
+                    channel_id="ch1",
+                    user_id="u-human",
+                    message='<!-- tunapi:roundtable {"version":1,"topic":"分析架构","participants":["kaixing","codeview"],"max_rounds":1} -->',
+                ),
+                "p1": Post(
+                    id="p1",
+                    channel_id="ch1",
+                    user_id="u-kaixing",
+                    root_id="root1",
+                    message="前端视角 @codeview",
+                    create_at=1,
+                ),
+                "p2": Post(
+                    id="p2",
+                    channel_id="ch1",
+                    user_id="u-codeview",
+                    root_id="root1",
+                    message="后端视角",
+                    create_at=2,
+                ),
+            },
+        )
+    )
+    cfg.bot.get_user = AsyncMock(
+        side_effect=lambda user_id: User(
+            id=user_id,
+            username={
+                "u-human": "minusjiang",
+                "u-kaixing": "kaixing",
+                "u-codeview": "codeview",
+                "user-in": "minusjiang",
+            }[user_id],
+            is_bot=user_id in {"u-kaixing", "u-codeview"},
+        )
+    )
+    msg = _make_msg(
+        "@kaixing 总结一下上述讨论",
+        root_id="root1",
+        sender_id="user-in",
+        sender_username="minusjiang",
+    )
+
+    result = await _try_dispatch_cross_roundtable(
+        msg,
+        cfg,
+        {},
+        MagicMock(),
+        None,
+        AsyncMock(side_effect=_send_capture),
+    )
+
+    assert result is False
+
+
+@pytest.mark.anyio
+async def test_closed_roundtable_bot_mention_is_ignored():
+    cfg = _make_cfg(bot_username="kaixing")
+    cfg.bot._client.get_thread = AsyncMock(
+        return_value=PostList(
+            order=["root1", "p1", "p2"],
+            posts={
+                "root1": Post(
+                    id="root1",
+                    channel_id="ch1",
+                    user_id="u-human",
+                    message='<!-- tunapi:roundtable {"version":1,"topic":"分析架构","participants":["kaixing","codeview"],"max_rounds":1} -->',
+                ),
+                "p1": Post(
+                    id="p1",
+                    channel_id="ch1",
+                    user_id="u-kaixing",
+                    root_id="root1",
+                    message="前端视角 @codeview",
+                    create_at=1,
+                ),
+                "p2": Post(
+                    id="p2",
+                    channel_id="ch1",
+                    user_id="u-codeview",
+                    root_id="root1",
+                    message="后端视角 @kaixing",
+                    create_at=2,
+                ),
+            },
+        )
+    )
+    cfg.bot.get_user = AsyncMock(
+        side_effect=lambda user_id: User(
+            id=user_id,
+            username={
+                "u-human": "minusjiang",
+                "u-kaixing": "kaixing",
+                "u-codeview": "codeview",
+                "user-in": "codeview",
+            }[user_id],
+            is_bot=user_id in {"u-kaixing", "u-codeview", "user-in"},
+        )
+    )
+    msg = _make_msg(
+        "后端视角 @kaixing",
+        root_id="root1",
+        sender_id="user-in",
+        sender_username="codeview",
+    )
 
     with patch("tunapi.mattermost.loop._run_engine", new_callable=AsyncMock) as run:
         result = await _try_dispatch_cross_roundtable(
