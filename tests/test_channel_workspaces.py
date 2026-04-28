@@ -1,6 +1,7 @@
 from pathlib import Path
 
 import pytest
+import tunapi.channel_workspaces as channel_workspaces
 
 from tunapi.channel_workspaces import (
     ChannelWorkspaceStore,
@@ -27,6 +28,18 @@ def test_workspace_store_adds_and_loads_binding(tmp_path: Path) -> None:
     )
     assert loaded.workspaces["agent-mem"].repo == "https://github.com/example/agent-mem"
     assert loaded.agents["codeview"].default_workspace == "agent-mem"
+
+
+def test_workspace_store_load_missing_file_returns_empty_binding(
+    tmp_path: Path,
+) -> None:
+    store = ChannelWorkspaceStore(tmp_path / "agent-runtime")
+
+    loaded = store.load("channel-1")
+
+    assert loaded.channel_id == "channel-1"
+    assert loaded.workspaces == {}
+    assert loaded.agents == {}
 
 
 def test_workspace_resolution_prefers_explicit_then_agent_then_channel_default(
@@ -144,3 +157,27 @@ def test_workspace_store_rejects_concurrent_mutation_lock(tmp_path: Path) -> Non
             path=tmp_path / "agent-runtime" / "workspaces" / "agent-mem",
             repo=None,
         )
+
+
+def test_workspace_store_recovers_stale_mutation_lock(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    store = ChannelWorkspaceStore(tmp_path / "agent-runtime")
+    lock = store.channel_dir("channel-1") / ".bindings.lock"
+    lock.parent.mkdir(parents=True)
+    lock.write_text("999999999:stale-token\n", encoding="utf-8")
+    monkeypatch.setattr(channel_workspaces, "_pid_exists", lambda _pid: False)
+
+    store.add_workspace(
+        channel_id="channel-1",
+        name="agent-mem",
+        path=tmp_path / "agent-runtime" / "workspaces" / "agent-mem",
+        repo=None,
+    )
+
+    loaded = store.load("channel-1")
+    assert loaded.workspaces["agent-mem"].path == (
+        tmp_path / "agent-runtime" / "workspaces" / "agent-mem"
+    )
+    assert not lock.exists()

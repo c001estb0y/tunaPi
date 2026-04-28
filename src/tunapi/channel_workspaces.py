@@ -14,6 +14,7 @@ from typing import Any
 import tomli_w
 
 _SAFE_COMPONENT = re.compile(r"^[A-Za-z0-9_.-]+$")
+_LOCK_TOKEN = re.compile(r"^(?P<pid>[0-9]+):(?P<token>.+)$")
 
 
 class WorkspaceResolutionError(RuntimeError):
@@ -79,6 +80,11 @@ class ChannelWorkspaceStore:
             raise WorkspaceResolutionError(f"invalid workspace bindings: {e}") from e
 
     def save(self, binding: ChannelWorkspaceBinding) -> None:
+        """Persist bindings without taking a mutation lock.
+
+        Public mutations should use add_workspace(), set_default(), or bind_agent().
+        Direct save() callers are responsible for external synchronization.
+        """
         _safe_channel_id(binding.channel_id)
         self._validate_binding(binding)
 
@@ -297,7 +303,16 @@ class ChannelWorkspaceStore:
         try:
             fd = os.open(lock_path, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
         except FileExistsError:
-            raise WorkspaceResolutionError("workspace bindings are locked") from None
+            if not _clear_stale_lock(lock_path):
+                raise WorkspaceResolutionError("workspace bindings are locked") from None
+            try:
+                fd = os.open(lock_path, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
+            except FileExistsError:
+                raise WorkspaceResolutionError("workspace bindings are locked") from None
+            except OSError as e:
+                raise WorkspaceResolutionError(
+                    f"failed to lock workspace bindings: {e}",
+                ) from e
         except OSError as e:
             raise WorkspaceResolutionError(f"failed to lock workspace bindings: {e}") from e
 
@@ -333,6 +348,43 @@ def _ensure_inside_runtime_root(runtime_root: Path, path: Path) -> Path:
     if not resolved_path.is_relative_to(resolved_root):
         raise WorkspaceResolutionError("workspace path must be inside runtime root")
     return resolved_path
+
+
+def _clear_stale_lock(lock_path: Path) -> bool:
+    try:
+        raw_lock = lock_path.read_text(encoding="utf-8").strip()
+    except OSError:
+        return False
+
+    match = _LOCK_TOKEN.fullmatch(raw_lock)
+    if match is None:
+        return False
+
+    pid = int(match.group("pid"))
+    if _pid_exists(pid):
+        return False
+
+    try:
+        lock_path.unlink()
+    except FileNotFoundError:
+        return True
+    except OSError:
+        return False
+    return True
+
+
+def _pid_exists(pid: int) -> bool:
+    if pid <= 0:
+        return False
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+    except OSError:
+        return False
+    return True
 
 
 def _binding_to_data(binding: ChannelWorkspaceBinding) -> dict[str, Any]:
