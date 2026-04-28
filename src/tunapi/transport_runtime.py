@@ -10,6 +10,7 @@ from .agent_runtime import (
     RunEnvironment,
     resolve_run_environment as _resolve_run_environment,
 )
+from .channel_workspaces import ChannelWorkspaceStore, ResolvedWorkspace
 from .config import ConfigError, ProjectsConfig
 from .context import RunContext
 from .directives import (
@@ -70,6 +71,7 @@ class TransportRuntime:
         "_projects_root",
         "_roundtable",
         "_agent_runtime",
+        "_workspace_store",
     )
 
     def __init__(
@@ -95,6 +97,7 @@ class TransportRuntime:
         self._projects_root = projects_root
         self._roundtable = roundtable or RoundtableConfig(engines=())
         self._agent_runtime: AgentRuntimeConfig | None = None
+        self._workspace_store: ChannelWorkspaceStore | None = None
 
     def update(
         self,
@@ -196,6 +199,11 @@ class TransportRuntime:
 
     def set_agent_runtime(self, cfg: AgentRuntimeConfig | None) -> None:
         self._agent_runtime = cfg
+        self._workspace_store = (
+            ChannelWorkspaceStore(cfg.root)
+            if cfg is not None and cfg.enabled
+            else None
+        )
 
     def resolve_run_environment(
         self,
@@ -209,6 +217,65 @@ class TransportRuntime:
             self._agent_runtime,
             agent_id=agent_id,
             workspace_dir=workspace_dir,
+        )
+
+    def add_channel_workspace(
+        self,
+        *,
+        channel_id: str,
+        name: str,
+        path: Path,
+        repo: str | None,
+    ) -> None:
+        if self._workspace_store is None:
+            raise ConfigError("agent_runtime must be enabled to use channel workspaces")
+        self._workspace_store.add_workspace(
+            channel_id=channel_id,
+            name=name,
+            path=path,
+            repo=repo,
+        )
+
+    def set_channel_default_workspace(
+        self,
+        *,
+        channel_id: str,
+        workspace_name: str,
+    ) -> None:
+        if self._workspace_store is None:
+            raise ConfigError("agent_runtime must be enabled to use channel workspaces")
+        self._workspace_store.set_default(channel_id, workspace_name)
+
+    def bind_channel_workspace_agent(
+        self,
+        *,
+        channel_id: str,
+        agent_id: str,
+        workspace_name: str,
+    ) -> None:
+        if self._workspace_store is None:
+            raise ConfigError("agent_runtime must be enabled to use channel workspaces")
+        self._workspace_store.bind_agent(
+            channel_id,
+            agent_id=agent_id,
+            workspace_name=workspace_name,
+        )
+
+    def resolve_channel_workspace(
+        self,
+        *,
+        channel_id: str,
+        agent_id: str,
+        explicit_workspace: str | None,
+        fallback_workspace: Path | None,
+    ) -> ResolvedWorkspace | None:
+        if self._workspace_store is None:
+            return None
+        return self._workspace_store.resolve(
+            channel_id=channel_id,
+            agent_id=agent_id,
+            explicit_workspace=explicit_workspace,
+            fallback_workspace=fallback_workspace,
         )
 
     def resolve_message(

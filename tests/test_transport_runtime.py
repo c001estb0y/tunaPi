@@ -192,3 +192,35 @@ def test_resolve_run_environment_returns_none_when_disabled(tmp_path: Path) -> N
         )
         is None
     )
+
+
+def test_transport_runtime_resolves_bound_channel_workspace(tmp_path: Path) -> None:
+    runtime = _make_runtime()
+    runtime.set_agent_runtime(
+        AgentRuntimeConfig(root=tmp_path / "agent-runtime", enabled=True)
+    )
+    workspace = tmp_path / "agent-runtime" / "workspaces" / "agent-mem"
+    workspace.mkdir(parents=True)
+    runtime.add_channel_workspace(
+        channel_id="channel-1",
+        name="agent-mem",
+        path=workspace,
+        repo="https://github.com/example/agent-mem",
+    )
+    runtime.bind_channel_workspace_agent(
+        channel_id="channel-1",
+        agent_id="codeview",
+        workspace_name="agent-mem",
+    )
+
+    resolved = runtime.resolve_channel_workspace(
+        channel_id="channel-1",
+        agent_id="codeview",
+        explicit_workspace=None,
+        fallback_workspace=None,
+    )
+
+    assert resolved is not None
+    assert resolved.workspace.name == "agent-mem"
+    assert resolved.workspace.path == workspace
+    assert resolved.binding_source == "agent-default"
