@@ -186,6 +186,63 @@ async def test_run_engine_uses_agent_runtime_lock_and_manifest(tmp_path, monkeyp
 
 
 @pytest.mark.anyio()
+async def test_run_engine_uses_bound_channel_workspace_in_manifest(
+    tmp_path,
+    monkeypatch,
+):
+    cfg = _make_cfg(bot_username="codeview")
+    runtime = _make_workspace_runtime(tmp_path)
+    cfg.runtime = MagicMock(wraps=runtime)
+    workspace = tmp_path / "agent-runtime" / "workspaces" / "agent-mem"
+    workspace.mkdir(parents=True)
+    cfg.runtime.add_channel_workspace(
+        channel_id="ch1",
+        name="agent-mem",
+        path=workspace,
+        repo="https://github.com/example/agent-mem",
+    )
+    cfg.runtime.bind_channel_workspace_agent(
+        channel_id="ch1",
+        agent_id="codeview",
+        workspace_name="agent-mem",
+    )
+
+    cfg.runtime.resolve_message.return_value = _make_resolved_message()
+    cfg.runtime.resolve_engine.return_value = "codex"
+    cfg.runtime.format_context_line.return_value = None
+    fallback_workspace = tmp_path / "agent-runtime" / "workspaces" / "fallback"
+    fallback_workspace.mkdir(parents=True)
+    cfg.runtime.resolve_run_cwd.return_value = fallback_workspace
+    cfg.runtime.resolve_runner.return_value = _make_resolved_runner()
+    cfg.runtime.is_resume_line = MagicMock()
+
+    async def fake_handle_message(*args, **kwargs):
+        return "ok"
+
+    monkeypatch.setattr(loop, "handle_message", fake_handle_message)
+
+    await _run_engine(
+        _ResolvedPrompt(text="review agent-mem", file_context=""),
+        _make_msg(text="review agent-mem", channel_id="ch1", post_id="p1"),
+        cfg,
+        {},
+        AsyncMock(),
+        None,
+        AsyncMock(),
+    )
+
+    manifests = list((workspace / ".agent" / "run-manifests").glob("*.json"))
+    assert len(manifests) == 1
+    data = json.loads(manifests[0].read_text(encoding="utf-8"))
+    assert data["agent_id"] == "codeview"
+    assert data["active_workspace_name"] == "agent-mem"
+    assert data["active_workspace_dir"] == str(workspace)
+    assert data["workspace_binding_source"] == "agent-default"
+    assert data["repo_url"] == "https://github.com/example/agent-mem"
+    assert data["channel_context_dir"].endswith("mattermost-ch1")
+
+
+@pytest.mark.anyio()
 async def test_run_engine_marks_manifest_failed_when_handle_message_returns_none(
     tmp_path,
     monkeypatch,

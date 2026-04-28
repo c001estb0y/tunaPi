@@ -1304,6 +1304,24 @@ async def _run_engine(
         await send(RenderedMessage(text=f"⚠️ {exc}"))
         return
 
+    agent_id = cfg.bot_username or cfg.bot_user_id or "default"
+    workspace_resolution = None
+    resolve_channel_workspace = getattr(runtime, "resolve_channel_workspace", None)
+    if callable(resolve_channel_workspace):
+        candidate_workspace_resolution = resolve_channel_workspace(
+            channel_id=msg.channel_id,
+            agent_id=agent_id,
+            explicit_workspace=None,
+            fallback_workspace=cwd,
+        )
+        # Older MagicMock-based tests expose arbitrary callable attributes; only
+        # opt in when the resolver returns the real dataclass-shaped result.
+        if candidate_workspace_resolution is not None and is_dataclass(
+            candidate_workspace_resolution
+        ):
+            workspace_resolution = candidate_workspace_resolution
+            cwd = workspace_resolution.workspace.path
+
     # -- Resume token (engine-specific lookup) --
     resume_token: ResumeToken | None = None
     if cfg.session_mode == "chat":
@@ -1449,6 +1467,14 @@ async def _run_engine(
                         engine=engine,
                         channel_id=str(msg.channel_id),
                         message_id=str(msg.post_id),
+                        channel_context_dir=str(run_env.channel_context_dir)
+                        if run_env.channel_context_dir is not None
+                        else None,
+                        active_workspace_name=run_env.active_workspace_name,
+                        active_workspace_dir=str(run_env.workspace_dir),
+                        workspace_binding_source=run_env.workspace_binding_source,
+                        repo_url=run_env.repo_url,
+                        branch=run_env.branch,
                     )
                     with contextlib.suppress(Exception):
                         write_manifest(run_env, manifest)
@@ -1457,7 +1483,6 @@ async def _run_engine(
     try:
         resolve_run_environment = getattr(runtime, "resolve_run_environment", None)
         if cwd is not None and callable(resolve_run_environment):
-            agent_id = cfg.bot_username or cfg.bot_user_id or "default"
             candidate_run_env = resolve_run_environment(
                 agent_id=agent_id,
                 workspace_dir=cwd,
@@ -1465,7 +1490,21 @@ async def _run_engine(
             # Older MagicMock-based tests expose arbitrary attributes; only opt in
             # when the resolver returns the real dataclass-shaped run environment.
             if candidate_run_env is not None and is_dataclass(candidate_run_env):
-                run_env = candidate_run_env
+                run_env = replace(
+                    candidate_run_env,
+                    channel_context_dir=workspace_resolution.channel_context_dir
+                    if workspace_resolution is not None
+                    else None,
+                    active_workspace_name=workspace_resolution.workspace.name
+                    if workspace_resolution is not None
+                    else None,
+                    workspace_binding_source=workspace_resolution.binding_source
+                    if workspace_resolution is not None
+                    else None,
+                    repo_url=workspace_resolution.workspace.repo
+                    if workspace_resolution is not None
+                    else None,
+                )
 
         if run_env is None:
             answer = await _call_handle_message()
