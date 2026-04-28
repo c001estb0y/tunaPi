@@ -1093,6 +1093,7 @@ async def _try_dispatch_command(
                 channel_id=msg.channel_id,
                 runtime=runtime,
                 send=send,
+                agent_id=cfg.bot_username or cfg.bot_user_id or "default",
             )
         case "project":
             await handle_project(
@@ -1494,10 +1495,21 @@ async def _run_engine(
     try:
         resolve_run_environment = getattr(runtime, "resolve_run_environment", None)
         if cwd is not None and callable(resolve_run_environment):
-            candidate_run_env = resolve_run_environment(
-                agent_id=agent_id,
-                workspace_dir=cwd,
-            )
+            try:
+                candidate_run_env = resolve_run_environment(
+                    agent_id=agent_id,
+                    workspace_dir=cwd,
+                )
+            except Exception as exc:  # noqa: BLE001
+                logger.error(
+                    "mattermost.runtime_resolution_error",
+                    error=str(exc),
+                    error_type=exc.__class__.__name__,
+                    channel_id=msg.channel_id,
+                    post_id=msg.post_id,
+                )
+                await send(RenderedMessage(text=f"⚠️ AI runtime error: {exc}"))
+                return
             # Older MagicMock-based tests expose arbitrary attributes; only opt in
             # when the resolver returns the real dataclass-shaped run environment.
             if candidate_run_env is not None and is_dataclass(candidate_run_env):

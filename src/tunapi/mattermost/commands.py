@@ -347,6 +347,7 @@ async def handle_workspace(
     channel_id: str,
     runtime: Any,
     send: Any,
+    agent_id: str | None = None,
 ) -> None:
     """Manage channel workspace bindings."""
     try:
@@ -381,16 +382,16 @@ async def handle_workspace(
                     RenderedMessage(text="Usage: `!workspace bind <agent> <workspace>`")
                 )
                 return
-            agent_id = parts[1].lstrip("@")
+            bound_agent_id = parts[1].lstrip("@")
             workspace_name = parts[2]
             runtime.bind_channel_workspace_agent(
                 channel_id=channel_id,
-                agent_id=agent_id,
+                agent_id=bound_agent_id,
                 workspace_name=workspace_name,
             )
             await send(
                 RenderedMessage(
-                    text=f"Bound `{agent_id}` to `{workspace_name}` for this channel."
+                    text=f"Bound `{bound_agent_id}` to `{workspace_name}` for this channel."
                 )
             )
             return
@@ -407,7 +408,8 @@ async def handle_workspace(
             return
 
         if subcmd == "list":
-            if "list_channel_workspaces" not in dir(runtime):
+            list_channel_workspaces = getattr(runtime, "list_channel_workspaces", None)
+            if not callable(list_channel_workspaces):
                 await send(
                     RenderedMessage(
                         text=(
@@ -417,13 +419,44 @@ async def handle_workspace(
                     )
                 )
                 return
-            await send(RenderedMessage(text="Workspace listing is not available yet."))
+            binding = list_channel_workspaces(channel_id)
+            if (
+                binding is None
+                or not binding.workspaces
+                and not binding.agents
+                and binding.default_workspace is None
+            ):
+                await send(
+                    RenderedMessage(
+                        text="No workspace binding found for this channel."
+                    )
+                )
+                return
+            lines = ["**Channel workspaces**", ""]
+            if binding.workspaces:
+                lines.append("**Workspaces:**")
+                for name, workspace in sorted(binding.workspaces.items()):
+                    repo = f" repo: `{workspace.repo}`" if workspace.repo else ""
+                    lines.append(f"- `{name}` path: `{workspace.path}`{repo}")
+            if binding.agents:
+                if lines[-1] != "":
+                    lines.append("")
+                lines.append("**Agent bindings:**")
+                for bound_agent_id, agent_binding in sorted(binding.agents.items()):
+                    lines.append(
+                        f"- `{bound_agent_id} -> {agent_binding.default_workspace}`"
+                    )
+            if binding.default_workspace is not None:
+                if lines[-1] != "":
+                    lines.append("")
+                lines.append(f"Default workspace: `{binding.default_workspace}`")
+            await send(RenderedMessage(text="\n".join(lines)))
             return
 
         if subcmd == "info":
             resolved = runtime.resolve_channel_workspace(
                 channel_id=channel_id,
-                agent_id="default",
+                agent_id=agent_id or "default",
                 explicit_workspace=None,
                 fallback_workspace=None,
             )

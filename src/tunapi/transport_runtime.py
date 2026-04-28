@@ -10,7 +10,11 @@ from .agent_runtime import (
     RunEnvironment,
     resolve_run_environment as _resolve_run_environment,
 )
-from .channel_workspaces import ChannelWorkspaceStore, ResolvedWorkspace
+from .channel_workspaces import (
+    ChannelWorkspaceBinding,
+    ChannelWorkspaceStore,
+    ResolvedWorkspace,
+)
 from .config import ConfigError, ProjectsConfig
 from .context import RunContext
 from .directives import (
@@ -260,6 +264,14 @@ class TransportRuntime:
             agent_id=agent_id,
             workspace_name=workspace_name,
         )
+
+    def list_channel_workspaces(
+        self,
+        channel_id: str,
+    ) -> ChannelWorkspaceBinding | None:
+        if self._workspace_store is None:
+            return None
+        return self._workspace_store.load(channel_id)
 
     def resolve_channel_workspace(
         self,

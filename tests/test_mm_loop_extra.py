@@ -360,7 +360,9 @@ async def test_run_engine_marks_manifest_failed_when_handle_message_returns_none
 
 
 @pytest.mark.anyio()
-async def test_run_engine_swallows_agent_runtime_resolution_errors(monkeypatch):
+async def test_run_engine_sends_runtime_error_when_run_environment_resolution_fails(
+    monkeypatch,
+):
     cfg = _make_cfg(bot_username="kaixing")
     cfg.runtime.resolve_message.return_value = _make_resolved_message()
     cfg.runtime.resolve_engine.return_value = "codex"
@@ -370,6 +372,7 @@ async def test_run_engine_swallows_agent_runtime_resolution_errors(monkeypatch):
     cfg.runtime.is_resume_line = MagicMock()
     cfg.runtime.resolve_run_environment.side_effect = AgentRuntimeError("bad runtime")
     handle_message = AsyncMock(return_value="ok")
+    send = AsyncMock()
     monkeypatch.setattr(loop, "handle_message", handle_message)
 
     await _run_engine(
@@ -379,10 +382,14 @@ async def test_run_engine_swallows_agent_runtime_resolution_errors(monkeypatch):
         {},
         AsyncMock(),
         None,
-        AsyncMock(),
+        send,
     )
 
     handle_message.assert_not_awaited()
+    send.assert_awaited_once()
+    assert "AI runtime error" in send.await_args.args[0].text
+    assert "bad runtime" in send.await_args.args[0].text
+    assert "Traceback" not in send.await_args.args[0].text
 
 
 # ---------------------------------------------------------------------------
@@ -839,14 +846,88 @@ class TestTryDispatchCommand:
         assert "Source: `channel-default`" in info_text
 
     @pytest.mark.anyio()
-    async def test_workspace_list_reports_not_available_without_list_api(
+    async def test_workspace_info_uses_current_bot_agent_binding(
         self,
         tmp_path: Path,
     ) -> None:
         cfg = _make_cfg(bot_username="codeview")
         cfg.runtime = _make_workspace_runtime(tmp_path)
+        workspace = tmp_path / "agent-runtime" / "workspaces" / "agent-mem"
+        workspace.mkdir(parents=True)
         send = AsyncMock()
 
+        await _try_dispatch_command(
+            _make_msg(text=f"!workspace add agent-mem {workspace.as_posix()}"),
+            cfg,
+            {},
+            MagicMock(),
+            None,
+            None,
+            send,
+        )
+        await _try_dispatch_command(
+            _make_msg(text="!workspace bind codeview agent-mem"),
+            cfg,
+            {},
+            MagicMock(),
+            None,
+            None,
+            send,
+        )
+        result = await _try_dispatch_command(
+            _make_msg(text="!workspace info"),
+            cfg,
+            {},
+            MagicMock(),
+            None,
+            None,
+            send,
+        )
+
+        assert result is True
+        info_text = send.await_args.args[0].text
+        assert "Active workspace: `agent-mem`" in info_text
+        assert "Source: `agent-default`" in info_text
+
+    @pytest.mark.anyio()
+    async def test_workspace_list_shows_workspaces_and_agent_bindings(
+        self,
+        tmp_path: Path,
+    ) -> None:
+        cfg = _make_cfg(bot_username="codeview")
+        cfg.runtime = _make_workspace_runtime(tmp_path)
+        workspace = tmp_path / "agent-runtime" / "workspaces" / "agent-mem"
+        workspace.mkdir(parents=True)
+        repo = "https://github.com/example/agent-mem"
+        send = AsyncMock()
+
+        await _try_dispatch_command(
+            _make_msg(text=f"!workspace add agent-mem {workspace.as_posix()} {repo}"),
+            cfg,
+            {},
+            MagicMock(),
+            None,
+            None,
+            send,
+        )
+        await _try_dispatch_command(
+            _make_msg(text="!workspace bind codeview agent-mem"),
+            cfg,
+            {},
+            MagicMock(),
+            None,
+            None,
+            send,
+        )
+        await _try_dispatch_command(
+            _make_msg(text="!workspace use agent-mem"),
+            cfg,
+            {},
+            MagicMock(),
+            None,
+            None,
+            send,
+        )
         result = await _try_dispatch_command(
             _make_msg(text="!workspace list"),
             cfg,
@@ -858,7 +939,12 @@ class TestTryDispatchCommand:
         )
 
         assert result is True
-        assert "Workspace listing is not available yet" in send.await_args.args[0].text
+        list_text = send.await_args.args[0].text
+        assert "agent-mem" in list_text
+        assert str(workspace.resolve(strict=False)) in list_text
+        assert repo in list_text
+        assert "codeview -> agent-mem" in list_text
+        assert "Default workspace: `agent-mem`" in list_text
 
     @pytest.mark.anyio()
     async def test_workspace_command_parse_error_for_unclosed_quote(

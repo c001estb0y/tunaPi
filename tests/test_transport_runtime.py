@@ -224,3 +224,34 @@ def test_transport_runtime_resolves_bound_channel_workspace(tmp_path: Path) -> N
     assert resolved.workspace.name == "agent-mem"
     assert resolved.workspace.path == workspace
     assert resolved.binding_source == "agent-default"
+
+
+def test_transport_runtime_lists_channel_workspaces(tmp_path: Path) -> None:
+    runtime = _make_runtime()
+    runtime.set_agent_runtime(
+        AgentRuntimeConfig(root=tmp_path / "agent-runtime", enabled=True)
+    )
+    workspace = tmp_path / "agent-runtime" / "workspaces" / "agent-mem"
+    workspace.mkdir(parents=True)
+    runtime.add_channel_workspace(
+        channel_id="channel-1",
+        name="agent-mem",
+        path=workspace,
+        repo="https://github.com/example/agent-mem",
+    )
+    runtime.bind_channel_workspace_agent(
+        channel_id="channel-1",
+        agent_id="codeview",
+        workspace_name="agent-mem",
+    )
+    runtime.set_channel_default_workspace(
+        channel_id="channel-1",
+        workspace_name="agent-mem",
+    )
+
+    binding = runtime.list_channel_workspaces("channel-1")
+
+    assert binding is not None
+    assert binding.workspaces["agent-mem"].repo == "https://github.com/example/agent-mem"
+    assert binding.agents["codeview"].default_workspace == "agent-mem"
+    assert binding.default_workspace == "agent-mem"
