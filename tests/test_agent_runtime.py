@@ -97,6 +97,46 @@ def test_prepare_runtime_home_creates_codex_dir(tmp_path: Path) -> None:
     assert (env.runtime_home / ".codex").is_dir()
 
 
+def test_prepare_runtime_home_maps_codex_agent_files(tmp_path: Path) -> None:
+    cfg = AgentRuntimeConfig(root=tmp_path / "agent-runtime")
+    env = resolve_run_environment(
+        cfg,
+        agent_id="codeview",
+        workspace_dir=tmp_path / "workspaces" / "agent-mem",
+    )
+    (env.agent_env_dir / "AGENTS.md").parent.mkdir(parents=True)
+    (env.agent_env_dir / "AGENTS.md").write_text(
+        "# Codeview\n\nAlways write review findings first.\n",
+        encoding="utf-8",
+    )
+    (env.agent_env_dir / ".codex" / "config.toml").parent.mkdir(parents=True)
+    (env.agent_env_dir / ".codex" / "config.toml").write_text(
+        "project_doc_max_bytes = 65536\n",
+        encoding="utf-8",
+    )
+    (env.agent_env_dir / ".codex" / "rules").mkdir(parents=True)
+    (env.agent_env_dir / ".codex" / "rules" / "default.rules").write_text(
+        'prefix_rule(pattern = ["git", "status"], decision = "allow")\n',
+        encoding="utf-8",
+    )
+    (env.agent_env_dir / ".agents" / "skills" / "codereview").mkdir(parents=True)
+    (env.agent_env_dir / ".agents" / "skills" / "codereview" / "SKILL.md").write_text(
+        "---\nname: codereview\ndescription: Review code changes.\n---\n",
+        encoding="utf-8",
+    )
+
+    prepare_runtime_home(env)
+
+    assert (
+        env.runtime_home / ".codex" / "AGENTS.md"
+    ).read_text(encoding="utf-8").startswith("# Codeview")
+    assert (env.runtime_home / ".codex" / "config.toml").is_file()
+    assert (env.runtime_home / ".codex" / "rules" / "default.rules").is_file()
+    assert (
+        env.runtime_home / ".agents" / "skills" / "codereview" / "SKILL.md"
+    ).is_file()
+
+
 def test_workspace_lock_rejects_second_holder(tmp_path: Path) -> None:
     cfg = AgentRuntimeConfig(root=tmp_path / "agent-runtime")
     env = resolve_run_environment(

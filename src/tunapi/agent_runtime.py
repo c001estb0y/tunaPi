@@ -3,6 +3,7 @@ from __future__ import annotations
 import dataclasses
 import json
 import os
+import shutil
 import uuid
 from collections.abc import Iterator, Mapping
 from contextlib import contextmanager
@@ -116,7 +117,45 @@ def resolve_run_environment(
 
 def prepare_runtime_home(env: RunEnvironment) -> None:
     (env.runtime_home / ".codex").mkdir(parents=True, exist_ok=True)
+    (env.runtime_home / ".agents").mkdir(parents=True, exist_ok=True)
     env.agent_env_dir.mkdir(parents=True, exist_ok=True)
+    _map_agent_env_to_runtime_home(env)
+
+
+def _map_agent_env_to_runtime_home(env: RunEnvironment) -> None:
+    _copy_file_if_exists(
+        env.agent_env_dir / "AGENTS.md",
+        env.runtime_home / ".codex" / "AGENTS.md",
+    )
+    _copy_file_if_exists(
+        env.agent_env_dir / "AGENTS.override.md",
+        env.runtime_home / ".codex" / "AGENTS.override.md",
+    )
+    _copy_file_if_exists(
+        env.agent_env_dir / ".codex" / "config.toml",
+        env.runtime_home / ".codex" / "config.toml",
+    )
+    _copy_dir_if_exists(
+        env.agent_env_dir / ".codex" / "rules",
+        env.runtime_home / ".codex" / "rules",
+    )
+    _copy_dir_if_exists(
+        env.agent_env_dir / ".agents" / "skills",
+        env.runtime_home / ".agents" / "skills",
+    )
+
+
+def _copy_file_if_exists(src: Path, dst: Path) -> None:
+    if not src.is_file():
+        return
+    dst.parent.mkdir(parents=True, exist_ok=True)
+    shutil.copy2(src, dst)
+
+
+def _copy_dir_if_exists(src: Path, dst: Path) -> None:
+    if not src.is_dir():
+        return
+    shutil.copytree(src, dst, dirs_exist_ok=True)
 
 
 def git_commit(path: Path) -> str | None:
