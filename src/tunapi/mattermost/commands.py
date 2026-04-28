@@ -335,6 +335,12 @@ def _register_project_in_config(
     runtime._projects.register_discovered(name, path.resolve(), channel_id)
 
 
+def _strip_matching_quotes(value: str) -> str:
+    if len(value) >= 2 and value[0] == value[-1] and value[0] in {"'", '"'}:
+        return value[1:-1]
+    return value
+
+
 async def handle_workspace(
     args: str,
     *,
@@ -344,7 +350,7 @@ async def handle_workspace(
 ) -> None:
     """Manage channel workspace bindings."""
     try:
-        parts = shlex.split(args)
+        parts = shlex.split(args, posix=False)
     except ValueError:
         await send(RenderedMessage(text="⚠️ Invalid workspace command syntax."))
         return
@@ -358,7 +364,7 @@ async def handle_workspace(
                 )
                 return
             name = parts[1]
-            path = Path(parts[2]).expanduser()
+            path = Path(_strip_matching_quotes(parts[2])).expanduser()
             repo = parts[3] if len(parts) > 3 else None
             runtime.add_channel_workspace(
                 channel_id=channel_id,

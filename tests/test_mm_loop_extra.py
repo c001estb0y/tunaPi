@@ -605,6 +605,27 @@ class TestTryDispatchCommand:
         assert resolved.workspace.repo == repo
 
     @pytest.mark.anyio()
+    async def test_workspace_add_supports_unquoted_windows_path(self) -> None:
+        cfg = _make_cfg(bot_username="codeview")
+        send = AsyncMock()
+
+        result = await _try_dispatch_command(
+            _make_msg(text=r"!workspace add tuna e:\Github\mattermost\tunaPi"),
+            cfg,
+            {},
+            MagicMock(),
+            None,
+            None,
+            send,
+        )
+        call_kwargs = cfg.runtime.add_channel_workspace.call_args.kwargs
+
+        assert result is True
+        assert str(call_kwargs["path"]) == r"e:\Github\mattermost\tunaPi"
+        assert str(call_kwargs["path"]) != "e:GithubmattermosttunaPi"
+        assert call_kwargs["repo"] is None
+
+    @pytest.mark.anyio()
     async def test_workspace_bind_strips_agent_mention_prefix(
         self,
         tmp_path: Path,
@@ -738,17 +759,25 @@ class TestTryDispatchCommand:
         cfg.runtime.add_channel_workspace.side_effect = RuntimeError("secret path /x")
         send = AsyncMock()
 
-        result = await _try_dispatch_command(
-            _make_msg(text="!workspace add agent-mem /tmp/agent-mem"),
-            cfg,
-            {},
-            MagicMock(),
-            None,
-            None,
-            send,
-        )
+        with patch("tunapi.mattermost.commands.logger") as mock_logger:
+            result = await _try_dispatch_command(
+                _make_msg(text="!workspace add agent-mem /tmp/agent-mem"),
+                cfg,
+                {},
+                MagicMock(),
+                None,
+                None,
+                send,
+            )
 
         assert result is True
+        mock_logger.error.assert_called_once()
+        log_args = mock_logger.error.call_args
+        assert log_args.args[0] == "mattermost.workspace_command_error"
+        assert log_args.kwargs["error"] == "secret path /x"
+        assert log_args.kwargs["error_type"] == "RuntimeError"
+        assert log_args.kwargs["channel_id"] == "ch1"
+        assert log_args.kwargs["subcmd"] == "add"
         text = send.await_args.args[0].text
         assert "workspace command failed unexpectedly" in text
         assert "secret path" not in text
