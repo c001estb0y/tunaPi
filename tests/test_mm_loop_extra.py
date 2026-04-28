@@ -243,6 +243,78 @@ async def test_run_engine_uses_bound_channel_workspace_in_manifest(
 
 
 @pytest.mark.anyio()
+async def test_run_engine_swallows_channel_workspace_resolution_errors(monkeypatch):
+    cfg = _make_cfg(bot_username="codeview")
+    cfg.runtime.resolve_message.return_value = _make_resolved_message()
+    cfg.runtime.resolve_engine.return_value = "codex"
+    cfg.runtime.format_context_line.return_value = None
+    cfg.runtime.resolve_run_cwd.return_value = Path("/workspace")
+    cfg.runtime.resolve_channel_workspace.side_effect = RuntimeError("bad binding")
+    cfg.runtime.resolve_runner.return_value = _make_resolved_runner()
+    cfg.runtime.is_resume_line = MagicMock()
+    handle_message = AsyncMock(return_value="ok")
+    send = AsyncMock()
+    monkeypatch.setattr(loop, "handle_message", handle_message)
+
+    await _run_engine(
+        _ResolvedPrompt(text="hello", file_context=""),
+        _make_msg(text="hello", channel_id="ch1", post_id="p1"),
+        cfg,
+        {},
+        AsyncMock(),
+        None,
+        send,
+    )
+
+    handle_message.assert_not_awaited()
+    send.assert_awaited_once()
+    assert "AI workspace error" in send.await_args.args[0].text
+    assert "bad binding" in send.await_args.args[0].text
+    assert "Traceback" not in send.await_args.args[0].text
+
+
+@pytest.mark.anyio()
+async def test_run_engine_uses_project_cwd_when_no_channel_workspace_binding(
+    tmp_path,
+    monkeypatch,
+):
+    cfg = _make_cfg(bot_username="codeview")
+    runtime = _make_workspace_runtime(tmp_path)
+    cfg.runtime = MagicMock(wraps=runtime)
+    project_workspace = tmp_path / "external-project"
+    project_workspace.mkdir()
+
+    cfg.runtime.resolve_message.return_value = _make_resolved_message()
+    cfg.runtime.resolve_engine.return_value = "codex"
+    cfg.runtime.format_context_line.return_value = None
+    cfg.runtime.resolve_run_cwd.return_value = project_workspace
+    cfg.runtime.resolve_channel_workspace.return_value = None
+    cfg.runtime.resolve_runner.return_value = _make_resolved_runner()
+    cfg.runtime.resolve_run_environment.return_value = None
+    cfg.runtime.is_resume_line = MagicMock()
+    handle_message = AsyncMock(return_value="ok")
+    monkeypatch.setattr(loop, "handle_message", handle_message)
+
+    await _run_engine(
+        _ResolvedPrompt(text="hello", file_context=""),
+        _make_msg(text="hello", channel_id="ch1", post_id="p1"),
+        cfg,
+        {},
+        AsyncMock(),
+        None,
+        AsyncMock(),
+    )
+
+    handle_message.assert_awaited_once()
+    cfg.runtime.resolve_channel_workspace.assert_called_once_with(
+        channel_id="ch1",
+        agent_id="codeview",
+        explicit_workspace=None,
+        fallback_workspace=None,
+    )
+
+
+@pytest.mark.anyio()
 async def test_run_engine_marks_manifest_failed_when_handle_message_returns_none(
     tmp_path,
     monkeypatch,

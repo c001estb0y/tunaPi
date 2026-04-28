@@ -1308,12 +1308,23 @@ async def _run_engine(
     workspace_resolution = None
     resolve_channel_workspace = getattr(runtime, "resolve_channel_workspace", None)
     if callable(resolve_channel_workspace):
-        candidate_workspace_resolution = resolve_channel_workspace(
-            channel_id=msg.channel_id,
-            agent_id=agent_id,
-            explicit_workspace=None,
-            fallback_workspace=cwd,
-        )
+        try:
+            candidate_workspace_resolution = resolve_channel_workspace(
+                channel_id=msg.channel_id,
+                agent_id=agent_id,
+                explicit_workspace=None,
+                fallback_workspace=None,
+            )
+        except Exception as exc:  # noqa: BLE001
+            logger.error(
+                "mattermost.workspace_resolution_error",
+                error=str(exc),
+                error_type=exc.__class__.__name__,
+                channel_id=msg.channel_id,
+                post_id=msg.post_id,
+            )
+            await send(RenderedMessage(text=f"⚠️ AI workspace error: {exc}"))
+            return
         # Older MagicMock-based tests expose arbitrary callable attributes; only
         # opt in when the resolver returns the real dataclass-shaped result.
         if candidate_workspace_resolution is not None and is_dataclass(
