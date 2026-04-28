@@ -57,6 +57,11 @@ class RunEnvironment:
     agent_env_dir: Path
     workspace_dir: Path
     lock_path: Path
+    channel_context_dir: Path | None = None
+    active_workspace_name: str | None = None
+    workspace_binding_source: str | None = None
+    repo_url: str | None = None
+    branch: str | None = None
 
     def subprocess_env(self, base_env: Mapping[str, str] | None = None) -> dict[str, str]:
         env = dict(base_env or os.environ)
@@ -65,6 +70,16 @@ class RunEnvironment:
         env["TUNAPI_AGENT_ID"] = self.agent_id
         env["TUNAPI_AGENT_ENV_DIR"] = str(self.agent_env_dir)
         env["TUNAPI_WORKSPACE_DIR"] = str(self.workspace_dir)
+        if self.channel_context_dir is not None:
+            env["TUNAPI_CHANNEL_CONTEXT_DIR"] = str(self.channel_context_dir)
+        if self.active_workspace_name is not None:
+            env["TUNAPI_ACTIVE_WORKSPACE_NAME"] = self.active_workspace_name
+        if self.workspace_binding_source is not None:
+            env["TUNAPI_WORKSPACE_BINDING_SOURCE"] = self.workspace_binding_source
+        if self.repo_url is not None:
+            env["TUNAPI_REPO_URL"] = self.repo_url
+        if self.branch is not None:
+            env["TUNAPI_WORKSPACE_BRANCH"] = self.branch
         return env
 
 
@@ -85,6 +100,12 @@ class RunManifest:
     engine: str
     channel_id: str | None = None
     message_id: str | None = None
+    channel_context_dir: str | None = None
+    active_workspace_name: str | None = None
+    active_workspace_dir: str | None = None
+    workspace_binding_source: str | None = None
+    repo_url: str | None = None
+    branch: str | None = None
 
 
 _ACTIVE_RUN_ENVIRONMENT: ContextVar[RunEnvironment | None] = ContextVar(
@@ -97,6 +118,11 @@ def resolve_run_environment(
     *,
     agent_id: str,
     workspace_dir: Path,
+    channel_context_dir: Path | None = None,
+    active_workspace_name: str | None = None,
+    workspace_binding_source: str | None = None,
+    repo_url: str | None = None,
+    branch: str | None = None,
 ) -> RunEnvironment:
     _validate_path_component(agent_id, label="agent id")
     _validate_workspace_dir(workspace_dir, root=cfg.root)
@@ -112,6 +138,11 @@ def resolve_run_environment(
         agent_env_dir=cfg.agent_envs_dir / agent_id,
         workspace_dir=workspace_dir,
         lock_path=cfg.locks_dir / f"workspace-{workspace_name}.lock",
+        channel_context_dir=channel_context_dir,
+        active_workspace_name=active_workspace_name,
+        workspace_binding_source=workspace_binding_source,
+        repo_url=repo_url,
+        branch=branch,
     )
 
 

@@ -259,6 +259,58 @@ def test_write_manifest_writes_runtime_and_workspace_copy(tmp_path: Path) -> Non
     ] == "kaixing"
 
 
+def test_write_manifest_includes_channel_and_active_workspace_metadata(
+    tmp_path: Path,
+) -> None:
+    cfg = AgentRuntimeConfig(root=tmp_path / "agent-runtime")
+    env = resolve_run_environment(
+        cfg,
+        agent_id="codeview",
+        workspace_dir=tmp_path / "agent-runtime" / "workspaces" / "agent-mem",
+        channel_context_dir=tmp_path
+        / "agent-runtime"
+        / "channels"
+        / "mattermost-channel-1",
+        active_workspace_name="agent-mem",
+        workspace_binding_source="agent-default",
+        repo_url="https://github.com/example/agent-mem",
+        branch="codeview/review-agent-mem",
+    )
+    env.workspace_dir.mkdir(parents=True)
+    manifest = RunManifest(
+        version=1,
+        run_id="run-1",
+        agent_id="codeview",
+        agent_env_dir=str(env.agent_env_dir),
+        agent_env_commit=None,
+        workspace_dir=str(env.workspace_dir),
+        workspace_commit_before=None,
+        workspace_commit_after=None,
+        sandbox_policy="workspace-write",
+        started_at="2026-04-28T10:00:00",
+        finished_at="2026-04-28T10:01:00",
+        status="completed",
+        engine="codex",
+        channel_id="channel-1",
+        message_id="message-1",
+        channel_context_dir=str(env.channel_context_dir),
+        active_workspace_name=env.active_workspace_name,
+        active_workspace_dir=str(env.workspace_dir),
+        workspace_binding_source=env.workspace_binding_source,
+        repo_url=env.repo_url,
+        branch=env.branch,
+    )
+
+    payload = json.loads(write_manifest(env, manifest).read_text(encoding="utf-8"))
+
+    assert payload["channel_context_dir"].endswith("mattermost-channel-1")
+    assert payload["active_workspace_name"] == "agent-mem"
+    assert payload["active_workspace_dir"] == str(env.workspace_dir)
+    assert payload["workspace_binding_source"] == "agent-default"
+    assert payload["repo_url"] == "https://github.com/example/agent-mem"
+    assert payload["branch"] == "codeview/review-agent-mem"
+
+
 @pytest.mark.parametrize("run_id", ["", "..", "../x", "a/b", r"a\b"])
 def test_write_manifest_rejects_invalid_run_id(tmp_path: Path, run_id: str) -> None:
     cfg = AgentRuntimeConfig(root=tmp_path / "agent-runtime")
@@ -361,6 +413,33 @@ def test_run_environment_subprocess_env_sets_home(tmp_path: Path) -> None:
     assert process_env["TUNAPI_AGENT_ID"] == "codeview"
     assert process_env["TUNAPI_AGENT_ENV_DIR"] == str(env.agent_env_dir)
     assert process_env["TUNAPI_WORKSPACE_DIR"] == str(env.workspace_dir)
+
+
+def test_subprocess_env_includes_channel_workspace_metadata(tmp_path: Path) -> None:
+    cfg = AgentRuntimeConfig(root=tmp_path / "agent-runtime")
+    env = resolve_run_environment(
+        cfg,
+        agent_id="codeview",
+        workspace_dir=tmp_path / "agent-runtime" / "workspaces" / "agent-mem",
+        channel_context_dir=tmp_path
+        / "agent-runtime"
+        / "channels"
+        / "mattermost-channel-1",
+        active_workspace_name="agent-mem",
+        workspace_binding_source="agent-default",
+        repo_url="https://github.com/example/agent-mem",
+        branch="codeview/review-agent-mem",
+    )
+
+    subprocess_env = env.subprocess_env({"PATH": "/bin"})
+
+    assert subprocess_env["TUNAPI_CHANNEL_CONTEXT_DIR"].endswith(
+        "mattermost-channel-1"
+    )
+    assert subprocess_env["TUNAPI_ACTIVE_WORKSPACE_NAME"] == "agent-mem"
+    assert subprocess_env["TUNAPI_WORKSPACE_BINDING_SOURCE"] == "agent-default"
+    assert subprocess_env["TUNAPI_REPO_URL"] == "https://github.com/example/agent-mem"
+    assert subprocess_env["TUNAPI_WORKSPACE_BRANCH"] == "codeview/review-agent-mem"
 
 
 def test_run_environment_subprocess_env_defaults_to_current_env(
