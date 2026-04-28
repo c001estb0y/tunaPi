@@ -4,6 +4,9 @@ import os
 import re
 import tempfile
 import tomllib
+import uuid
+from collections.abc import Iterator
+from contextlib import contextmanager
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -65,10 +68,15 @@ class ChannelWorkspaceStore:
 
         try:
             data = tomllib.loads(raw.decode("utf-8"))
-        except tomllib.TOMLDecodeError as e:
-            raise WorkspaceResolutionError(f"malformed workspace bindings: {e}") from e
-
-        return self._binding_from_data(channel_id, data)
+            if not isinstance(data, dict):
+                raise WorkspaceResolutionError("workspace bindings must be a table")
+            return self._binding_from_data(channel_id, data)
+        except (
+            UnicodeDecodeError,
+            tomllib.TOMLDecodeError,
+            WorkspaceResolutionError,
+        ) as e:
+            raise WorkspaceResolutionError(f"invalid workspace bindings: {e}") from e
 
     def save(self, binding: ChannelWorkspaceBinding) -> None:
         _safe_channel_id(binding.channel_id)
@@ -112,21 +120,23 @@ class ChannelWorkspaceStore:
     ) -> None:
         _validate_workspace_name(name)
         workspace_path = _ensure_inside_runtime_root(self.runtime_root, path)
-        binding = self.load(channel_id)
-        binding.workspaces[name] = WorkspaceRecord(
-            name=name,
-            path=workspace_path,
-            repo=repo,
-        )
-        self.save(binding)
+        with self._mutation_lock(channel_id):
+            binding = self.load(channel_id)
+            binding.workspaces[name] = WorkspaceRecord(
+                name=name,
+                path=workspace_path,
+                repo=repo,
+            )
+            self.save(binding)
 
     def set_default(self, channel_id: str, workspace_name: str) -> None:
         _validate_workspace_name(workspace_name)
-        binding = self.load(channel_id)
-        if workspace_name not in binding.workspaces:
-            raise WorkspaceResolutionError(f"unknown workspace: {workspace_name}")
-        binding.default_workspace = workspace_name
-        self.save(binding)
+        with self._mutation_lock(channel_id):
+            binding = self.load(channel_id)
+            if workspace_name not in binding.workspaces:
+                raise WorkspaceResolutionError(f"unknown workspace: {workspace_name}")
+            binding.default_workspace = workspace_name
+            self.save(binding)
 
     def bind_agent(
         self,
@@ -136,11 +146,14 @@ class ChannelWorkspaceStore:
     ) -> None:
         _validate_workspace_name(agent_id)
         _validate_workspace_name(workspace_name)
-        binding = self.load(channel_id)
-        if workspace_name not in binding.workspaces:
-            raise WorkspaceResolutionError(f"unknown workspace: {workspace_name}")
-        binding.agents[agent_id] = AgentWorkspaceBinding(default_workspace=workspace_name)
-        self.save(binding)
+        with self._mutation_lock(channel_id):
+            binding = self.load(channel_id)
+            if workspace_name not in binding.workspaces:
+                raise WorkspaceResolutionError(f"unknown workspace: {workspace_name}")
+            binding.agents[agent_id] = AgentWorkspaceBinding(
+                default_workspace=workspace_name,
+            )
+            self.save(binding)
 
     def resolve(
         self,
@@ -274,6 +287,33 @@ class ChannelWorkspaceStore:
             return binding.workspaces[workspace_name]
         except KeyError:
             raise WorkspaceResolutionError(f"unknown workspace: {workspace_name}") from None
+
+    @contextmanager
+    def _mutation_lock(self, channel_id: str) -> Iterator[None]:
+        channel_dir = self.channel_dir(channel_id)
+        channel_dir.mkdir(parents=True, exist_ok=True)
+        lock_path = channel_dir / ".bindings.lock"
+        token = f"{os.getpid()}:{uuid.uuid4()}\n"
+        try:
+            fd = os.open(lock_path, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
+        except FileExistsError:
+            raise WorkspaceResolutionError("workspace bindings are locked") from None
+        except OSError as e:
+            raise WorkspaceResolutionError(f"failed to lock workspace bindings: {e}") from e
+
+        try:
+            with os.fdopen(fd, "w", encoding="utf-8") as lock_file:
+                lock_file.write(token)
+                lock_file.flush()
+            yield
+        finally:
+            try:
+                if lock_path.read_text(encoding="utf-8") == token:
+                    lock_path.unlink()
+            except FileNotFoundError:
+                pass
+            except OSError:
+                pass
 
 
 def _safe_channel_id(channel_id: str) -> str:

@@ -85,3 +85,62 @@ def test_workspace_store_rejects_path_outside_runtime_root(tmp_path: Path) -> No
             path=tmp_path / "elsewhere",
             repo=None,
         )
+
+
+@pytest.mark.parametrize("payload", [b"\xff\xfe", b"[channel\n"])
+def test_workspace_store_wraps_invalid_bindings_file(
+    tmp_path: Path,
+    payload: bytes,
+) -> None:
+    store = ChannelWorkspaceStore(tmp_path / "agent-runtime")
+    bindings_path = store.bindings_path("channel-1")
+    bindings_path.parent.mkdir(parents=True)
+    bindings_path.write_bytes(payload)
+
+    with pytest.raises(WorkspaceResolutionError, match="invalid workspace bindings"):
+        store.load("channel-1")
+
+
+def test_workspace_store_uses_fallback_workspace(tmp_path: Path) -> None:
+    store = ChannelWorkspaceStore(tmp_path / "agent-runtime")
+    fallback = tmp_path / "agent-runtime" / "workspaces" / "fallback"
+
+    resolved = store.resolve(
+        channel_id="channel-1",
+        agent_id="codeview",
+        explicit_workspace=None,
+        fallback_workspace=fallback,
+    )
+
+    assert resolved is not None
+    assert resolved.binding_source == "project-binding"
+    assert resolved.workspace.name == "fallback"
+    assert resolved.workspace.path == fallback
+    assert resolved.channel_context_dir == store.channel_dir("channel-1")
+
+
+def test_workspace_store_rejects_unknown_explicit_workspace(tmp_path: Path) -> None:
+    store = ChannelWorkspaceStore(tmp_path / "agent-runtime")
+
+    with pytest.raises(WorkspaceResolutionError, match="unknown workspace"):
+        store.resolve(
+            channel_id="channel-1",
+            agent_id="codeview",
+            explicit_workspace="missing",
+            fallback_workspace=None,
+        )
+
+
+def test_workspace_store_rejects_concurrent_mutation_lock(tmp_path: Path) -> None:
+    store = ChannelWorkspaceStore(tmp_path / "agent-runtime")
+    lock = store.channel_dir("channel-1") / ".bindings.lock"
+    lock.parent.mkdir(parents=True)
+    lock.write_text("other-holder\n", encoding="utf-8")
+
+    with pytest.raises(WorkspaceResolutionError, match="workspace bindings are locked"):
+        store.add_workspace(
+            channel_id="channel-1",
+            name="agent-mem",
+            path=tmp_path / "agent-runtime" / "workspaces" / "agent-mem",
+            repo=None,
+        )
