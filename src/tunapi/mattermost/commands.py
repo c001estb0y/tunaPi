@@ -12,6 +12,7 @@ import time
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
+from ..channel_workspaces import WorkspaceResolutionError
 from ..config import HOME_CONFIG_PATH, ConfigError, read_config, write_config
 from ..context import RunContext
 from ..core.commands import parse_command
@@ -77,6 +78,7 @@ async def handle_help(
         "| `!models [engine]` | Show available models |",
         "| `!trigger <all\\|mentions>` | Set trigger mode |",
         "| `!project list\\|set\\|info` | Manage project binding |",
+        "| `!workspace list\\|add\\|bind\\|use\\|info` | Manage channel workspaces |",
         "| `!persona add\\|list\\|remove` | Manage personas |",
         "| `!memory [list\\|add\\|search\\|delete]` | Project memory |",
         "| `!branch [create\\|merge\\|discard]` | Conversation branches |",
@@ -330,6 +332,99 @@ def _register_project_in_config(
     except ConfigError:
         pass
     runtime._projects.register_discovered(name, path.resolve(), channel_id)
+
+
+async def handle_workspace(
+    args: str,
+    *,
+    channel_id: str,
+    runtime: Any,
+    send: Any,
+) -> None:
+    """Manage channel workspace bindings."""
+    parts = args.strip().split()
+    subcmd = parts[0].lower() if parts else "info"
+
+    try:
+        if subcmd == "add":
+            if len(parts) < 3:
+                await send(
+                    RenderedMessage(text="Usage: `!workspace add <name> <path> [repo]`")
+                )
+                return
+            name = parts[1]
+            path = Path(parts[2]).expanduser()
+            repo = parts[3] if len(parts) > 3 else None
+            runtime.add_channel_workspace(
+                channel_id=channel_id,
+                name=name,
+                path=path,
+                repo=repo,
+            )
+            await send(RenderedMessage(text=f"Workspace `{name}` added."))
+            return
+
+        if subcmd == "bind":
+            if len(parts) != 3:
+                await send(
+                    RenderedMessage(text="Usage: `!workspace bind <agent> <workspace>`")
+                )
+                return
+            agent_id = parts[1].lstrip("@")
+            workspace_name = parts[2]
+            runtime.bind_channel_workspace_agent(
+                channel_id=channel_id,
+                agent_id=agent_id,
+                workspace_name=workspace_name,
+            )
+            await send(
+                RenderedMessage(
+                    text=f"Bound `{agent_id}` to `{workspace_name}` for this channel."
+                )
+            )
+            return
+
+        if subcmd == "use":
+            if len(parts) != 2:
+                await send(RenderedMessage(text="Usage: `!workspace use <workspace>`"))
+                return
+            runtime.set_channel_default_workspace(
+                channel_id=channel_id,
+                workspace_name=parts[1],
+            )
+            await send(RenderedMessage(text=f"Default workspace set to `{parts[1]}`."))
+            return
+
+        if subcmd in {"info", "list"}:
+            resolved = runtime.resolve_channel_workspace(
+                channel_id=channel_id,
+                agent_id="default",
+                explicit_workspace=None,
+                fallback_workspace=None,
+            )
+            if resolved is None:
+                await send(
+                    RenderedMessage(
+                        text="No workspace binding found for this channel."
+                    )
+                )
+                return
+            await send(
+                RenderedMessage(
+                    text=(
+                        f"Active workspace: `{resolved.workspace.name}`\n"
+                        f"Path: `{resolved.workspace.path}`\n"
+                        f"Source: `{resolved.binding_source}`"
+                    )
+                )
+            )
+            return
+
+        await send(RenderedMessage(text="Usage: `!workspace list|add|bind|use|info`"))
+    except WorkspaceResolutionError as exc:
+        await send(RenderedMessage(text=f"⚠️ {exc}"))
+    except Exception as exc:  # noqa: BLE001
+        await send(RenderedMessage(text=f"⚠️ workspace command failed: {exc}"))
 
 
 async def handle_project(

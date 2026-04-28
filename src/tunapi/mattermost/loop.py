@@ -64,6 +64,7 @@ from .commands import (
     handle_rt,
     handle_status,
     handle_trigger,
+    handle_workspace,
     parse_cross_rt_start,
 )
 from .roundtable import (
@@ -1084,6 +1085,13 @@ async def _try_dispatch_command(
                 args,
                 channel_id=msg.channel_id,
                 chat_prefs=chat_prefs,
+                send=send,
+            )
+        case "workspace":
+            await handle_workspace(
+                args,
+                channel_id=msg.channel_id,
+                runtime=runtime,
                 send=send,
             )
         case "project":

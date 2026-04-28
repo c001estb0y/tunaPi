@@ -4,6 +4,7 @@ file command handling, roundtable archiving, and startup helpers."""
 from __future__ import annotations
 
 import json
+from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -517,6 +518,41 @@ class TestTryDispatchCommand:
 
         assert result is True
         mock_project.assert_called_once()
+
+    @pytest.mark.anyio()
+    async def test_workspace_add_and_bind_commands(self, tmp_path: Path) -> None:
+        cfg = _make_cfg(bot_username="codeview")
+        cfg.runtime.set_agent_runtime(
+            AgentRuntimeConfig(root=tmp_path / "agent-runtime", enabled=True)
+        )
+        workspace = tmp_path / "agent-runtime" / "workspaces" / "agent-mem"
+        workspace.mkdir(parents=True)
+        send = AsyncMock()
+
+        added = await _try_dispatch_command(
+            _make_msg(text=f"!workspace add agent-mem {workspace}"),
+            cfg,
+            {},
+            MagicMock(),
+            None,
+            None,
+            send,
+        )
+        bound = await _try_dispatch_command(
+            _make_msg(text="!workspace bind codeview agent-mem"),
+            cfg,
+            {},
+            MagicMock(),
+            None,
+            None,
+            send,
+        )
+
+        assert added is True
+        assert bound is True
+        assert send.await_count == 2
+        assert "Workspace `agent-mem` added" in send.await_args_list[0].args[0].text
+        assert "Bound `codeview` to `agent-mem`" in send.await_args_list[1].args[0].text
 
     @pytest.mark.anyio()
     async def test_models_dispatches(self, sessions, chat_prefs):
