@@ -8,6 +8,7 @@ them before passing to the engine dispatcher.
 from __future__ import annotations
 
 import re
+import shlex
 import time
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
@@ -342,7 +343,11 @@ async def handle_workspace(
     send: Any,
 ) -> None:
     """Manage channel workspace bindings."""
-    parts = args.strip().split()
+    try:
+        parts = shlex.split(args)
+    except ValueError:
+        await send(RenderedMessage(text="⚠️ Invalid workspace command syntax."))
+        return
     subcmd = parts[0].lower() if parts else "info"
 
     try:
@@ -395,7 +400,21 @@ async def handle_workspace(
             await send(RenderedMessage(text=f"Default workspace set to `{parts[1]}`."))
             return
 
-        if subcmd in {"info", "list"}:
+        if subcmd == "list":
+            if "list_channel_workspaces" not in dir(runtime):
+                await send(
+                    RenderedMessage(
+                        text=(
+                            "Workspace listing is not available yet. "
+                            "Use !workspace info for the active workspace."
+                        )
+                    )
+                )
+                return
+            await send(RenderedMessage(text="Workspace listing is not available yet."))
+            return
+
+        if subcmd == "info":
             resolved = runtime.resolve_channel_workspace(
                 channel_id=channel_id,
                 agent_id="default",
@@ -424,7 +443,14 @@ async def handle_workspace(
     except WorkspaceResolutionError as exc:
         await send(RenderedMessage(text=f"⚠️ {exc}"))
     except Exception as exc:  # noqa: BLE001
-        await send(RenderedMessage(text=f"⚠️ workspace command failed: {exc}"))
+        logger.error(
+            "mattermost.workspace_command_error",
+            error=str(exc),
+            error_type=exc.__class__.__name__,
+            channel_id=channel_id,
+            subcmd=subcmd,
+        )
+        await send(RenderedMessage(text="⚠️ workspace command failed unexpectedly."))
 
 
 async def handle_project(
