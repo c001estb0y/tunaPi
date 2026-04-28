@@ -12,6 +12,7 @@ from weakref import WeakValueDictionary
 
 import anyio
 
+from .agent_runtime import get_active_run_environment
 from .logging import get_logger, log_pipeline
 from .model import (
     Action,
@@ -642,6 +643,9 @@ class JsonlSubprocessRunner(BaseRunner):
         cmd = [self.command(), *self.build_args(prompt, resume, state=state)]
         payload = self.stdin_payload(prompt, resume, state=state)
         env = self.env(state=state)
+        active_env = get_active_run_environment()
+        if active_env is not None:
+            env = active_env.subprocess_env(env)
         logger.info(
             "runner.start",
             engine=self.engine,

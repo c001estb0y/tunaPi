@@ -5,12 +5,21 @@ from __future__ import annotations
 import contextlib
 import re
 from dataclasses import dataclass, is_dataclass, replace
+from datetime import datetime, timezone
 from pathlib import Path
 from collections.abc import Awaitable, Callable
 from typing import TYPE_CHECKING, Any
 
 import anyio
 
+from ..agent_runtime import (
+    RunManifest,
+    activate_run_environment,
+    git_commit,
+    prepare_runtime_home,
+    workspace_lock,
+    write_manifest,
+)
 from ..core import lifecycle
 from ..core.memory_facade import ProjectMemoryFacade
 from ..journal import (
@@ -1361,10 +1370,9 @@ async def _run_engine(
         model_override = await chat_prefs.get_engine_model(msg.channel_id, engine)
     run_options = EngineRunOptions(model=model_override) if model_override else None
 
-    run_base_token = set_run_base_dir(cwd)
-    try:
+    async def _call_handle_message() -> str | None:
         with apply_run_options(run_options):
-            answer = await handle_message(
+            return await handle_message(
                 cfg.exec_cfg,
                 runner=resolved_runner.runner,
                 incoming=incoming,
@@ -1379,6 +1387,72 @@ async def _run_engine(
                 ledger=ledger,
                 project_sessions=project_sessions,
             )
+
+    run_env = None
+
+    async def _call_handle_message_with_agent_runtime() -> str | None:
+        prepare_runtime_home(run_env)
+        manifest_run_id = re.sub(
+            r'[:<>"|?*]',
+            "-",
+            j_run_id or make_run_id(str(msg.channel_id), str(msg.post_id)),
+        )
+        started_at = datetime.now(timezone.utc).isoformat()
+        workspace_commit_before = git_commit(run_env.workspace_dir)
+        agent_env_commit = git_commit(run_env.agent_env_dir)
+        status = "completed"
+
+        with workspace_lock(run_env):
+            with activate_run_environment(run_env):
+                try:
+                    answer = await _call_handle_message()
+                    if answer is None:
+                        status = "failed"
+                    return answer
+                except Exception:
+                    status = "failed"
+                    raise
+                finally:
+                    finished_at = datetime.now(timezone.utc).isoformat()
+                    workspace_commit_after = git_commit(run_env.workspace_dir)
+                    manifest = RunManifest(
+                        version=1,
+                        run_id=manifest_run_id,
+                        agent_id=run_env.agent_id,
+                        agent_env_dir=str(run_env.agent_env_dir),
+                        agent_env_commit=agent_env_commit,
+                        workspace_dir=str(run_env.workspace_dir),
+                        workspace_commit_before=workspace_commit_before,
+                        workspace_commit_after=workspace_commit_after,
+                        sandbox_policy="workspace-write",
+                        started_at=started_at,
+                        finished_at=finished_at,
+                        status=status,
+                        engine=engine,
+                        channel_id=str(msg.channel_id),
+                        message_id=str(msg.post_id),
+                    )
+                    with contextlib.suppress(Exception):
+                        write_manifest(run_env, manifest)
+
+    run_base_token = set_run_base_dir(cwd)
+    try:
+        resolve_run_environment = getattr(runtime, "resolve_run_environment", None)
+        if cwd is not None and callable(resolve_run_environment):
+            agent_id = cfg.bot_username or cfg.bot_user_id or "default"
+            candidate_run_env = resolve_run_environment(
+                agent_id=agent_id,
+                workspace_dir=cwd,
+            )
+            # Older MagicMock-based tests expose arbitrary attributes; only opt in
+            # when the resolver returns the real dataclass-shaped run environment.
+            if candidate_run_env is not None and is_dataclass(candidate_run_env):
+                run_env = candidate_run_env
+
+        if run_env is None:
+            answer = await _call_handle_message()
+        else:
+            answer = await _call_handle_message_with_agent_runtime()
         # Auto-attach referenced files to the channel
         if answer:
             await _attach_referenced_files(cfg, msg.channel_id, answer)

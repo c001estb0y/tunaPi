@@ -18,6 +18,7 @@ from pydantic.types import StrictInt
 from pydantic_settings import BaseSettings, SettingsConfigDict
 from pydantic_settings.sources import TomlConfigSettingsSource
 
+from .agent_runtime import AgentRuntimeConfig
 from .config import (
     ConfigError,
     HOME_CONFIG_PATH,
@@ -155,6 +156,14 @@ class RoundtableSettings(BaseModel):
     engines: list[NonEmptyStr] = Field(default_factory=list)
     rounds: int = Field(default=1, ge=1)
     max_rounds: int = Field(default=3, ge=1)
+
+
+class AgentRuntimeSettings(BaseModel):
+    model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
+
+    enabled: bool = False
+    root: NonEmptyStr = "~/.tunapi/agent-runtime"
+    default_agent_id: NonEmptyStr | None = None
 
 
 class SlackFilesSettings(BaseModel):
@@ -301,6 +310,7 @@ class TunapiSettings(BaseSettings):
 
     plugins: PluginsSettings = Field(default_factory=PluginsSettings)
     roundtable: RoundtableSettings = Field(default_factory=RoundtableSettings)
+    agent_runtime: AgentRuntimeSettings = Field(default_factory=AgentRuntimeSettings)
 
     @model_validator(mode="before")
     @classmethod
@@ -473,6 +483,21 @@ class TunapiSettings(BaseSettings):
             default_project=default_project,
             chat_map=chat_map,
         )
+
+
+def build_agent_runtime_config(
+    settings: TunapiSettings,
+    *,
+    config_path: Path,
+) -> AgentRuntimeConfig:
+    root = Path(settings.agent_runtime.root).expanduser()
+    if not root.is_absolute():
+        root = config_path.parent / root
+    return AgentRuntimeConfig(
+        root=root,
+        enabled=settings.agent_runtime.enabled,
+        default_agent_id=settings.agent_runtime.default_agent_id,
+    )
 
 
 def load_settings(path: str | Path | None = None) -> tuple[TunapiSettings, Path]:

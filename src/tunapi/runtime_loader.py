@@ -6,13 +6,14 @@ from pathlib import Path
 from typing import Any
 from collections.abc import Iterable, Mapping
 
+from .agent_runtime import AgentRuntimeConfig
 from .backends import EngineBackend
 from .config import ConfigError, ProjectsConfig
 from .engines import get_backend, list_backend_ids
 from .ids import RESERVED_CHAT_COMMANDS
 from .logging import get_logger
 from .router import AutoRouter, EngineStatus, RunnerEntry
-from .settings import TunapiSettings
+from .settings import TunapiSettings, build_agent_runtime_config
 from .transport_runtime import RoundtableConfig, TransportRuntime
 
 logger = get_logger(__name__)
@@ -27,9 +28,10 @@ class RuntimeSpec:
     watch_config: bool = False
     projects_root: str | None = None
     roundtable: RoundtableConfig | None = None
+    agent_runtime: AgentRuntimeConfig | None = None
 
     def to_runtime(self, *, config_path: Path | None) -> TransportRuntime:
-        return TransportRuntime(
+        runtime = TransportRuntime(
             router=self.router,
             projects=self.projects,
             allowlist=self.allowlist,
@@ -39,6 +41,8 @@ class RuntimeSpec:
             projects_root=self.projects_root,
             roundtable=self.roundtable,
         )
+        runtime.set_agent_runtime(self.agent_runtime)
+        return runtime
 
     def apply(self, runtime: TransportRuntime, *, config_path: Path | None) -> None:
         runtime.update(
@@ -49,6 +53,7 @@ class RuntimeSpec:
             plugin_configs=self.plugin_configs,
             watch_config=self.watch_config,
         )
+        runtime.set_agent_runtime(self.agent_runtime)
 
 
 def resolve_plugins_allowlist(
@@ -217,4 +222,5 @@ def build_runtime_spec(
         watch_config=settings.watch_config,
         projects_root=settings.projects_root,
         roundtable=roundtable_cfg,
+        agent_runtime=build_agent_runtime_config(settings, config_path=config_path),
     )

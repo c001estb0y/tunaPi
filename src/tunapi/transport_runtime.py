@@ -5,6 +5,11 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Literal
 
+from .agent_runtime import (
+    AgentRuntimeConfig,
+    RunEnvironment,
+    resolve_run_environment as _resolve_run_environment,
+)
 from .config import ConfigError, ProjectsConfig
 from .context import RunContext
 from .directives import (
@@ -64,6 +69,7 @@ class TransportRuntime:
         "_watch_config",
         "_projects_root",
         "_roundtable",
+        "_agent_runtime",
     )
 
     def __init__(
@@ -88,6 +94,7 @@ class TransportRuntime:
         )
         self._projects_root = projects_root
         self._roundtable = roundtable or RoundtableConfig(engines=())
+        self._agent_runtime: AgentRuntimeConfig | None = None
 
     def update(
         self,
@@ -186,6 +193,23 @@ class TransportRuntime:
                 f"Invalid `plugins.{plugin_id}` in {path}; expected a table."
             )
         return dict(raw)
+
+    def set_agent_runtime(self, cfg: AgentRuntimeConfig | None) -> None:
+        self._agent_runtime = cfg
+
+    def resolve_run_environment(
+        self,
+        *,
+        agent_id: str,
+        workspace_dir: Path,
+    ) -> RunEnvironment | None:
+        if self._agent_runtime is None or not self._agent_runtime.enabled:
+            return None
+        return _resolve_run_environment(
+            self._agent_runtime,
+            agent_id=agent_id,
+            workspace_dir=workspace_dir,
+        )
 
     def resolve_message(
         self,

@@ -36,6 +36,42 @@ def test_build_runtime_spec_minimal(
     assert runtime.watch_config is True
 
 
+def test_runtime_spec_applies_agent_runtime_to_transport_runtime(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    monkeypatch.setattr(runtime_loader.shutil, "which", lambda _cmd: "/bin/echo")
+    settings = TunapiSettings.model_validate(
+        {
+            "transport": "telegram",
+            "transports": {"telegram": {"bot_token": "token", "chat_id": 123}},
+            "agent_runtime": {
+                "enabled": True,
+                "root": str(tmp_path / "agent-runtime"),
+                "default_agent_id": "kaixing",
+            },
+        }
+    )
+    config_path = tmp_path / "tunapi.toml"
+    config_path.write_text(
+        'transport = "telegram"\n\n[transports.telegram]\n'
+        'bot_token = "token"\nchat_id = 123\n',
+        encoding="utf-8",
+    )
+
+    spec = runtime_loader.build_runtime_spec(
+        settings=settings,
+        config_path=config_path,
+    )
+    runtime = spec.to_runtime(config_path=config_path)
+    env = runtime.resolve_run_environment(
+        agent_id="kaixing",
+        workspace_dir=tmp_path / "workspace",
+    )
+
+    assert env is not None
+    assert env.runtime_home == tmp_path / "agent-runtime" / "runtime-homes" / "kaixing"
+
+
 def test_resolve_default_engine_unknown(tmp_path: Path) -> None:
     settings = TunapiSettings.model_validate(
         {

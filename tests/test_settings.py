@@ -206,6 +206,36 @@ def test_transport_config_mattermost_cross_roundtable(tmp_path: Path) -> None:
     }
 
 
+def test_agent_runtime_settings_defaults_to_disabled() -> None:
+    settings = TunapiSettings.model_validate(
+        {
+            "transport": "telegram",
+            "transports": {"telegram": {"bot_token": "token", "chat_id": 123}},
+        }
+    )
+
+    assert settings.agent_runtime.enabled is False
+    assert settings.agent_runtime.root == "~/.tunapi/agent-runtime"
+
+
+def test_agent_runtime_settings_accepts_root_and_default_agent() -> None:
+    settings = TunapiSettings.model_validate(
+        {
+            "transport": "telegram",
+            "transports": {"telegram": {"bot_token": "token", "chat_id": 123}},
+            "agent_runtime": {
+                "enabled": True,
+                "root": "/data/home/minusjiang/agent-runtime",
+                "default_agent_id": "kaixing",
+            },
+        }
+    )
+
+    assert settings.agent_runtime.enabled is True
+    assert settings.agent_runtime.root == "/data/home/minusjiang/agent-runtime"
+    assert settings.agent_runtime.default_agent_id == "kaixing"
+
+
 def test_transport_config_telegram_missing(tmp_path: Path) -> None:
     config_path = tmp_path / "tunapi.toml"
     settings = TunapiSettings.model_validate(

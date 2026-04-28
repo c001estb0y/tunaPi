@@ -1,5 +1,6 @@
 from pathlib import Path
 
+from tunapi.agent_runtime import AgentRuntimeConfig
 from tunapi.config import ProjectConfig, ProjectsConfig
 from tunapi.context import RunContext
 from tunapi.router import AutoRouter, RunnerEntry
@@ -161,3 +162,33 @@ def test_resolve_message_project_directive_clears_ambient_branch() -> None:
 
     assert resolved.context == RunContext(project="other", branch=None)
     assert resolved.context_source == "directives"
+
+
+def test_resolve_run_environment_from_runtime(tmp_path: Path) -> None:
+    runtime = _make_runtime()
+    runtime.set_agent_runtime(
+        AgentRuntimeConfig(root=tmp_path / "agent-runtime", enabled=True)
+    )
+
+    env = runtime.resolve_run_environment(
+        agent_id="kaixing",
+        workspace_dir=tmp_path / "workspaces" / "calculator-development",
+    )
+
+    assert env is not None
+    assert env.runtime_home == tmp_path / "agent-runtime" / "runtime-homes" / "kaixing"
+
+
+def test_resolve_run_environment_returns_none_when_disabled(tmp_path: Path) -> None:
+    runtime = _make_runtime()
+    runtime.set_agent_runtime(
+        AgentRuntimeConfig(root=tmp_path / "agent-runtime", enabled=False)
+    )
+
+    assert (
+        runtime.resolve_run_environment(
+            agent_id="kaixing",
+            workspace_dir=tmp_path / "workspace",
+        )
+        is None
+    )

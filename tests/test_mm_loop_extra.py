@@ -3,13 +3,20 @@ file command handling, roundtable archiving, and startup helpers."""
 
 from __future__ import annotations
 
+import json
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
+from tunapi.agent_runtime import (
+    AgentRuntimeConfig,
+    AgentRuntimeError,
+    resolve_run_environment,
+)
 from tunapi.core.commands import parse_command
 from tunapi.core.roundtable import RoundtableSession, RoundtableStore
 from tunapi.mattermost.api_models import Post, PostList, User
+import tunapi.mattermost.loop as loop
 from tunapi.mattermost.loop import (
     _ResolvedPrompt,
     _archive_roundtable,
@@ -17,6 +24,7 @@ from tunapi.mattermost.loop import (
     _handle_cancel_reaction,
     _handle_file_command,
     _resolve_prompt,
+    _run_engine,
     _send_startup,
     _try_dispatch_command,
 )
@@ -91,6 +99,141 @@ def _make_cfg(
         return_value=MessageRef(channel_id="ch1", message_id="200")
     )
     return cfg
+
+
+def _make_resolved_message(
+    prompt: str = "hello",
+    engine_override: str | None = None,
+) -> MagicMock:
+    resolved = MagicMock()
+    resolved.prompt = prompt
+    resolved.resume_token = None
+    resolved.engine_override = engine_override
+    resolved.context = None
+    return resolved
+
+
+def _make_resolved_runner(*, issue: str | None = None) -> MagicMock:
+    resolved = MagicMock()
+    resolved.issue = issue
+    resolved.runner = MagicMock()
+    return resolved
+
+
+@pytest.mark.anyio()
+async def test_run_engine_uses_agent_runtime_lock_and_manifest(tmp_path, monkeypatch):
+    cfg = _make_cfg(bot_username="kaixing")
+    workspace = tmp_path / "agent-runtime" / "workspaces" / "calculator-development"
+    workspace.mkdir(parents=True)
+    runtime_config = AgentRuntimeConfig(root=tmp_path / "agent-runtime", enabled=True)
+
+    cfg.runtime.resolve_message.return_value = _make_resolved_message()
+    cfg.runtime.resolve_engine.return_value = "codex"
+    cfg.runtime.format_context_line.return_value = None
+    cfg.runtime.resolve_run_cwd.return_value = workspace
+    cfg.runtime.resolve_runner.return_value = _make_resolved_runner()
+    cfg.runtime.is_resume_line = MagicMock()
+    cfg.runtime.resolve_run_environment.side_effect = (
+        lambda *, agent_id, workspace_dir: resolve_run_environment(
+            runtime_config,
+            agent_id=agent_id,
+            workspace_dir=workspace_dir,
+        )
+    )
+
+    async def fake_handle_message(*args, **kwargs):
+        return "ok"
+
+    monkeypatch.setattr(loop, "handle_message", fake_handle_message)
+
+    await _run_engine(
+        _ResolvedPrompt(text="hello", file_context=""),
+        _make_msg(text="hello"),
+        cfg,
+        {},
+        AsyncMock(),
+        None,
+        AsyncMock(),
+    )
+
+    manifests = list((workspace / ".agent" / "run-manifests").glob("*.json"))
+    assert len(manifests) == 1
+    data = json.loads(manifests[0].read_text(encoding="utf-8"))
+    assert data["agent_id"] == "kaixing"
+    assert data["workspace_dir"] == str(workspace)
+    assert data["status"] == "completed"
+    assert not (runtime_config.locks_dir / "workspace-calculator-development.lock").exists()
+
+
+@pytest.mark.anyio()
+async def test_run_engine_marks_manifest_failed_when_handle_message_returns_none(
+    tmp_path,
+    monkeypatch,
+):
+    cfg = _make_cfg(bot_username="kaixing")
+    workspace = tmp_path / "agent-runtime" / "workspaces" / "calculator-development"
+    workspace.mkdir(parents=True)
+    runtime_config = AgentRuntimeConfig(root=tmp_path / "agent-runtime", enabled=True)
+
+    cfg.runtime.resolve_message.return_value = _make_resolved_message()
+    cfg.runtime.resolve_engine.return_value = "codex"
+    cfg.runtime.format_context_line.return_value = None
+    cfg.runtime.resolve_run_cwd.return_value = workspace
+    cfg.runtime.resolve_runner.return_value = _make_resolved_runner()
+    cfg.runtime.is_resume_line = MagicMock()
+    cfg.runtime.resolve_run_environment.side_effect = (
+        lambda *, agent_id, workspace_dir: resolve_run_environment(
+            runtime_config,
+            agent_id=agent_id,
+            workspace_dir=workspace_dir,
+        )
+    )
+
+    async def fake_handle_message(*args, **kwargs):
+        return None
+
+    monkeypatch.setattr(loop, "handle_message", fake_handle_message)
+
+    await _run_engine(
+        _ResolvedPrompt(text="hello", file_context=""),
+        _make_msg(text="hello"),
+        cfg,
+        {},
+        AsyncMock(),
+        None,
+        AsyncMock(),
+    )
+
+    manifests = list((workspace / ".agent" / "run-manifests").glob("*.json"))
+    assert len(manifests) == 1
+    data = json.loads(manifests[0].read_text(encoding="utf-8"))
+    assert data["status"] == "failed"
+
+
+@pytest.mark.anyio()
+async def test_run_engine_swallows_agent_runtime_resolution_errors(monkeypatch):
+    cfg = _make_cfg(bot_username="kaixing")
+    cfg.runtime.resolve_message.return_value = _make_resolved_message()
+    cfg.runtime.resolve_engine.return_value = "codex"
+    cfg.runtime.format_context_line.return_value = None
+    cfg.runtime.resolve_run_cwd.return_value = "/workspace"
+    cfg.runtime.resolve_runner.return_value = _make_resolved_runner()
+    cfg.runtime.is_resume_line = MagicMock()
+    cfg.runtime.resolve_run_environment.side_effect = AgentRuntimeError("bad runtime")
+    handle_message = AsyncMock(return_value="ok")
+    monkeypatch.setattr(loop, "handle_message", handle_message)
+
+    await _run_engine(
+        _ResolvedPrompt(text="hello", file_context=""),
+        _make_msg(text="hello"),
+        cfg,
+        {},
+        AsyncMock(),
+        None,
+        AsyncMock(),
+    )
+
+    handle_message.assert_not_awaited()
 
 
 # ---------------------------------------------------------------------------
