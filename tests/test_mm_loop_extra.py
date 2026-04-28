@@ -795,6 +795,91 @@ class TestResolvePrompt:
         assert "[Current request]\n总结一下上述讨论" in resolved.text
 
     @pytest.mark.anyio()
+    async def test_stalled_active_roundtable_human_mention_is_released_to_normal_chat(
+        self,
+    ):
+        cfg = _make_cfg(bot_username="kaixing")
+        cfg.cross_roundtable_enabled = True
+        cfg.bot = MagicMock()
+        cfg.bot._client = MagicMock()
+        cfg.bot._client.get_thread = AsyncMock(
+            return_value=PostList(
+                order=["root1", "p1", "p2", "p3", "human1"],
+                posts={
+                    "root1": Post(
+                        id="root1",
+                        channel_id="ch1",
+                        user_id="u-human",
+                        message='<!-- tunapi:roundtable {"version":1,"topic":"agent runtime","participants":["kaixing","codeview"],"max_rounds":3} -->',
+                    ),
+                    "p1": Post(
+                        id="p1",
+                        channel_id="ch1",
+                        user_id="u-kaixing",
+                        root_id="root1",
+                        message="建议拆成 agent env 和 task workspace @codeview",
+                        create_at=1,
+                    ),
+                    "p2": Post(
+                        id="p2",
+                        channel_id="ch1",
+                        user_id="u-codeview",
+                        root_id="root1",
+                        message="补充 runtime 与 sandbox 约束 @kaixing",
+                        create_at=2,
+                    ),
+                    "p3": Post(
+                        id="p3",
+                        channel_id="ch1",
+                        user_id="u-kaixing",
+                        root_id="root1",
+                        message="收敛成三层：agents、runtime、tasks",
+                        create_at=3,
+                    ),
+                    "human1": Post(
+                        id="human1",
+                        channel_id="ch1",
+                        user_id="u-human",
+                        root_id="root1",
+                        message="@kaixing 总结一下最终方案",
+                        create_at=4,
+                    ),
+                },
+            )
+        )
+        cfg.bot.get_user = AsyncMock(
+            side_effect=lambda user_id: User(
+                id=user_id,
+                username={
+                    "u-human": "minusjiang",
+                    "u-kaixing": "kaixing",
+                    "u-codeview": "codeview",
+                }[user_id],
+                is_bot=user_id != "u-human",
+            )
+        )
+        msg = _make_msg(
+            text="@kaixing 总结一下最终方案",
+            root_id="root1",
+            sender_id="u-human",
+            sender_username="minusjiang",
+        )
+
+        with patch("tunapi.mattermost.loop._run_engine", new_callable=AsyncMock) as run:
+            await _dispatch_message(
+                msg,
+                cfg,
+                {},
+                MagicMock(),
+                None,
+            )
+
+        run.assert_awaited_once()
+        resolved = run.await_args.args[0]
+        assert "Topic: agent runtime" in resolved.text
+        assert "[Current request]\n总结一下最终方案" in resolved.text
+
+    @pytest.mark.anyio()
     async def test_external_mention_gets_busy_message_while_roundtable_engine_running(
         self,
     ):

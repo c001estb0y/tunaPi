@@ -712,6 +712,16 @@ async def _try_dispatch_cross_roundtable(
         )
         return False
     if msg.sender_username.lstrip("@") not in metadata.participants:
+        if not await _sender_is_bot(msg, cfg) and _mentions_bot(
+            msg.text, cfg.bot_username
+        ):
+            logger.info(
+                "cross_roundtable.active_human_mention_released",
+                sender=msg.sender_username,
+                bot=cfg.bot_username,
+                root_id=msg.root_id,
+            )
+            return False
         return True
     if not _mentions_bot(msg.text, cfg.bot_username):
         return True
