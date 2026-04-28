@@ -123,6 +123,15 @@ def prepare_runtime_home(env: RunEnvironment) -> None:
 
 
 def _map_agent_env_to_runtime_home(env: RunEnvironment) -> None:
+    for target in (
+        env.runtime_home / ".codex" / "AGENTS.md",
+        env.runtime_home / ".codex" / "AGENTS.override.md",
+        env.runtime_home / ".codex" / "config.toml",
+        env.runtime_home / ".codex" / "rules",
+        env.runtime_home / ".agents" / "skills",
+    ):
+        _reset_managed_target(target)
+
     _copy_file_if_exists(
         env.agent_env_dir / "AGENTS.md",
         env.runtime_home / ".codex" / "AGENTS.md",
@@ -156,6 +165,13 @@ def _copy_dir_if_exists(src: Path, dst: Path) -> None:
     if not src.is_dir():
         return
     shutil.copytree(src, dst, dirs_exist_ok=True)
+
+
+def _reset_managed_target(path: Path) -> None:
+    if path.is_dir():
+        shutil.rmtree(path)
+    elif path.exists():
+        path.unlink()
 
 
 def git_commit(path: Path) -> str | None:

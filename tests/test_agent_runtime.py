@@ -1,5 +1,6 @@
 import json
 import os
+import shutil
 import subprocess
 from pathlib import Path
 from typing import Any
@@ -135,6 +136,50 @@ def test_prepare_runtime_home_maps_codex_agent_files(tmp_path: Path) -> None:
     assert (
         env.runtime_home / ".agents" / "skills" / "codereview" / "SKILL.md"
     ).is_file()
+
+
+def test_prepare_runtime_home_removes_stale_mapped_files(tmp_path: Path) -> None:
+    cfg = AgentRuntimeConfig(root=tmp_path / "agent-runtime")
+    env = resolve_run_environment(
+        cfg,
+        agent_id="codeview",
+        workspace_dir=tmp_path / "workspaces" / "agent-mem",
+    )
+    (env.agent_env_dir / "AGENTS.md").parent.mkdir(parents=True)
+    (env.agent_env_dir / "AGENTS.md").write_text(
+        "# Codeview\n",
+        encoding="utf-8",
+    )
+    (env.agent_env_dir / ".codex" / "rules").mkdir(parents=True)
+    (env.agent_env_dir / ".codex" / "rules" / "current.rules").write_text(
+        'prefix_rule(pattern = ["git", "status"], decision = "allow")\n',
+        encoding="utf-8",
+    )
+    (env.agent_env_dir / ".agents" / "skills" / "current").mkdir(parents=True)
+    (env.agent_env_dir / ".agents" / "skills" / "current" / "SKILL.md").write_text(
+        "---\nname: current\ndescription: Current skill.\n---\n",
+        encoding="utf-8",
+    )
+
+    prepare_runtime_home(env)
+
+    assert (env.runtime_home / ".codex" / "AGENTS.md").is_file()
+    assert (env.runtime_home / ".codex" / "rules" / "current.rules").is_file()
+    assert (
+        env.runtime_home / ".agents" / "skills" / "current" / "SKILL.md"
+    ).is_file()
+
+    (env.agent_env_dir / "AGENTS.md").unlink()
+    shutil.rmtree(env.agent_env_dir / ".codex" / "rules")
+    shutil.rmtree(env.agent_env_dir / ".agents" / "skills")
+
+    prepare_runtime_home(env)
+
+    assert not (env.runtime_home / ".codex" / "AGENTS.md").exists()
+    assert not (env.runtime_home / ".codex" / "rules" / "current.rules").exists()
+    assert not (
+        env.runtime_home / ".agents" / "skills" / "current" / "SKILL.md"
+    ).exists()
 
 
 def test_workspace_lock_rejects_second_holder(tmp_path: Path) -> None:
