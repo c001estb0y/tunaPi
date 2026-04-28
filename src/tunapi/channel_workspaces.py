@@ -14,7 +14,7 @@ from typing import Any
 import tomli_w
 
 _SAFE_COMPONENT = re.compile(r"^[A-Za-z0-9_.-]+$")
-_LOCK_TOKEN = re.compile(r"^(?P<pid>[0-9]+):(?P<token>.+)$")
+_LOCK_TOKEN = re.compile(r"^(?P<pid>\d+):(?P<token>[0-9a-f]{32})$")
 
 
 class WorkspaceResolutionError(RuntimeError):
@@ -299,7 +299,7 @@ class ChannelWorkspaceStore:
         channel_dir = self.channel_dir(channel_id)
         channel_dir.mkdir(parents=True, exist_ok=True)
         lock_path = channel_dir / ".bindings.lock"
-        token = f"{os.getpid()}:{uuid.uuid4()}\n"
+        token = f"{os.getpid()}:{uuid.uuid4().hex}\n"
         try:
             fd = os.open(lock_path, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
         except FileExistsError:

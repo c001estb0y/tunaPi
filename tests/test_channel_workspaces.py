@@ -166,7 +166,7 @@ def test_workspace_store_recovers_stale_mutation_lock(
     store = ChannelWorkspaceStore(tmp_path / "agent-runtime")
     lock = store.channel_dir("channel-1") / ".bindings.lock"
     lock.parent.mkdir(parents=True)
-    lock.write_text("999999999:stale-token\n", encoding="utf-8")
+    lock.write_text("999999999:0123456789abcdef0123456789abcdef\n", encoding="utf-8")
     monkeypatch.setattr(channel_workspaces, "_pid_exists", lambda _pid: False)
 
     store.add_workspace(
@@ -181,3 +181,24 @@ def test_workspace_store_recovers_stale_mutation_lock(
         tmp_path / "agent-runtime" / "workspaces" / "agent-mem"
     )
     assert not lock.exists()
+
+
+def test_workspace_store_rejects_unknown_lock_token_format(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    store = ChannelWorkspaceStore(tmp_path / "agent-runtime")
+    lock = store.channel_dir("channel-1") / ".bindings.lock"
+    lock.parent.mkdir(parents=True)
+    lock.write_text("999999:not-a-uuid\n", encoding="utf-8")
+    monkeypatch.setattr(channel_workspaces, "_pid_exists", lambda _pid: False)
+
+    with pytest.raises(WorkspaceResolutionError, match="workspace bindings are locked"):
+        store.add_workspace(
+            channel_id="channel-1",
+            name="agent-mem",
+            path=tmp_path / "agent-runtime" / "workspaces" / "agent-mem",
+            repo=None,
+        )
+
+    assert lock.read_text(encoding="utf-8") == "999999:not-a-uuid\n"
