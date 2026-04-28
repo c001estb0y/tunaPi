@@ -70,6 +70,14 @@ class RunEnvironment:
         env["TUNAPI_AGENT_ID"] = self.agent_id
         env["TUNAPI_AGENT_ENV_DIR"] = str(self.agent_env_dir)
         env["TUNAPI_WORKSPACE_DIR"] = str(self.workspace_dir)
+        for key in (
+            "TUNAPI_CHANNEL_CONTEXT_DIR",
+            "TUNAPI_ACTIVE_WORKSPACE_NAME",
+            "TUNAPI_WORKSPACE_BINDING_SOURCE",
+            "TUNAPI_REPO_URL",
+            "TUNAPI_WORKSPACE_BRANCH",
+        ):
+            env.pop(key, None)
         if self.channel_context_dir is not None:
             env["TUNAPI_CHANNEL_CONTEXT_DIR"] = str(self.channel_context_dir)
         if self.active_workspace_name is not None:

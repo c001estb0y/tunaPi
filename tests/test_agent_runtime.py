@@ -442,6 +442,36 @@ def test_subprocess_env_includes_channel_workspace_metadata(tmp_path: Path) -> N
     assert subprocess_env["TUNAPI_WORKSPACE_BRANCH"] == "codeview/review-agent-mem"
 
 
+def test_subprocess_env_clears_optional_channel_workspace_metadata(
+    tmp_path: Path,
+) -> None:
+    cfg = AgentRuntimeConfig(root=tmp_path / "agent-runtime")
+    env = resolve_run_environment(
+        cfg,
+        agent_id="codeview",
+        workspace_dir=tmp_path / "agent-runtime" / "workspaces" / "agent-mem",
+    )
+
+    subprocess_env = env.subprocess_env(
+        {
+            "PATH": "/bin",
+            "TUNAPI_CHANNEL_CONTEXT_DIR": "/stale/channel",
+            "TUNAPI_ACTIVE_WORKSPACE_NAME": "stale-workspace",
+            "TUNAPI_WORKSPACE_BINDING_SOURCE": "stale-source",
+            "TUNAPI_REPO_URL": "https://example.invalid/stale.git",
+            "TUNAPI_WORKSPACE_BRANCH": "stale-branch",
+        }
+    )
+
+    assert "TUNAPI_CHANNEL_CONTEXT_DIR" not in subprocess_env
+    assert "TUNAPI_ACTIVE_WORKSPACE_NAME" not in subprocess_env
+    assert "TUNAPI_WORKSPACE_BINDING_SOURCE" not in subprocess_env
+    assert "TUNAPI_REPO_URL" not in subprocess_env
+    assert "TUNAPI_WORKSPACE_BRANCH" not in subprocess_env
+    assert subprocess_env["TUNAPI_AGENT_ID"] == "codeview"
+    assert subprocess_env["PATH"] == "/bin"
+
+
 def test_run_environment_subprocess_env_defaults_to_current_env(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
