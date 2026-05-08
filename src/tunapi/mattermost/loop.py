@@ -1439,7 +1439,22 @@ async def _run_engine(
     run_env = None
 
     async def _call_handle_message_with_agent_runtime() -> str | None:
+        nonlocal incoming
         prepare_runtime_home(run_env)
+
+        # Inject AGENTS.md as system instruction prefix
+        agents_md = run_env.agent_env_dir / "AGENTS.md"
+        if agents_md.is_file():
+            try:
+                instructions = agents_md.read_text(encoding="utf-8").strip()
+                if instructions:
+                    incoming = replace(
+                        incoming,
+                        text=f"[System Instructions]\n{instructions}\n[/System Instructions]\n\n{incoming.text}",
+                    )
+            except OSError:
+                pass
+
         manifest_run_id = re.sub(
             r'[:<>"|?*]',
             "-",
